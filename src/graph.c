@@ -11,11 +11,11 @@ void graph_increase_size(graph *g)
     g->V = realloc(g->V, sizeof(int *) * g->_a);
     g->D = realloc(g->D, sizeof(int) * g->_a);
     g->A = realloc(g->A, sizeof(int) * g->_a);
-    g->_A = realloc(g->_A, sizeof(long long) * g->_a);
+    g->_A = realloc(g->_A, sizeof(int) * g->_a);
     g->W = realloc(g->W, sizeof(long long) * g->_a);
 
-    g->pl = realloc(g->pl, sizeof(int) * g->_a);
-    g->pr = realloc(g->pr, sizeof(int) * g->_a);
+    g->p1 = realloc(g->p1, sizeof(int) * g->_a);
+    g->p2 = realloc(g->p2, sizeof(int) * g->_a);
 
     for (int i = g->_a / 2; i < g->_a; i++)
     {
@@ -42,11 +42,11 @@ graph *graph_init()
     g->V = malloc(sizeof(int *) * g->_a);
     g->D = malloc(sizeof(int) * g->_a);
     g->A = malloc(sizeof(int) * g->_a);
-    g->_A = malloc(sizeof(long long) * g->_a);
+    g->_A = malloc(sizeof(int) * g->_a);
     g->W = malloc(sizeof(long long) * g->_a);
 
-    g->pl = malloc(sizeof(int) * g->_a);
-    g->pr = malloc(sizeof(int) * g->_a);
+    g->p1 = malloc(sizeof(int) * g->_a);
+    g->p2 = malloc(sizeof(int) * g->_a);
 
     for (int i = 0; i < g->_a; i++)
     {
@@ -80,7 +80,7 @@ void graph_construction_add_edge(graph *g, int u, int v)
 
 void graph_construction_sort_edges(graph *g)
 {
-    long long m = 0;
+    int m = 0;
     for (int i = 0; i < g->n; i++)
     {
         qsort(g->V[i], g->D[i], sizeof(int), compare_ids);
@@ -138,8 +138,8 @@ graph *graph_parse(FILE *f)
     for (int u = 0; u < n; u++)
     {
         graph_construction_add_vertex(g, 1);
-        g->pl[u] = u;
-        g->pr[u] = u;
+        g->p1[u] = u;
+        g->p2[u] = u;
     }
 
     long long ei = 0;
@@ -192,8 +192,8 @@ void graph_free(graph *g)
     free(g->A);
     free(g->_A);
 
-    free(g->pl);
-    free(g->pr);
+    free(g->p1);
+    free(g->p2);
 
     free(g);
 }
@@ -211,11 +211,11 @@ graph *graph_copy(graph *g)
     gc->V = malloc(sizeof(int *) * gc->_a);
     gc->D = malloc(sizeof(int) * gc->_a);
     gc->A = malloc(sizeof(int) * gc->_a);
-    gc->_A = malloc(sizeof(long long) * gc->_a);
+    gc->_A = malloc(sizeof(int) * gc->_a);
     gc->W = malloc(sizeof(long long) * gc->_a);
 
-    gc->pl = malloc(sizeof(int) * gc->_a);
-    gc->pr = malloc(sizeof(int) * gc->_a);
+    gc->p1 = malloc(sizeof(int) * gc->_a);
+    gc->p2 = malloc(sizeof(int) * gc->_a);
 
     for (int i = 0; i < gc->_a; i++)
     {
@@ -229,8 +229,8 @@ graph *graph_copy(graph *g)
         gc->A[u] = g->A[u];
         gc->W[u] = g->W[u];
 
-        gc->pl[u] = g->pl[u];
-        gc->pr[u] = g->pr[u];
+        gc->p1[u] = g->p1[u];
+        gc->p2[u] = g->p2[u];
 
         for (int i = 0; i < g->D[u]; i++)
         {
@@ -243,9 +243,11 @@ graph *graph_copy(graph *g)
 
 // Everything below this point assumes sorted neighborhoods
 
-void graph_add_vertex(graph *g, long long w)
+void graph_add_vertex(graph *g, long long w, int p1, int p2)
 {
     graph_construction_add_vertex(g, w);
+    g->p1[g->n - 1] = p1;
+    g->p2[g->n - 1] = p2;
 }
 
 int graph_insert_endpoint(graph *g, int u, int v)

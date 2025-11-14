@@ -108,9 +108,8 @@ cliques *cliques_init(graph *g)
     int *Count = calloc(sizeof(int), g->n);
 
     int nc = greedy_cliques(g, Order, Clique, Clique_size, Count);
-    // printf("%d\n", nc);
 
-    for (int i = 0; i < 10; i++)
+    for (int i = 0; i < 20; i++)
     {
         qsort_r(Order, g->n, sizeof(int), compare_clique, Clique);
 
@@ -121,7 +120,6 @@ cliques *cliques_init(graph *g)
         }
 
         nc = greedy_cliques(g, Order, Clique, Clique_size, Count);
-        // printf("%d\n", nc);
     }
 
     free(Order);
@@ -130,6 +128,9 @@ cliques *cliques_init(graph *g)
 
     c->C = malloc(sizeof(int *) * c->n);
     c->D = malloc(sizeof(int) * c->n);
+    c->FM = Clique;
+    c->V = malloc(sizeof(int *) * c->n);
+    c->EW = malloc(sizeof(int *) * c->n);
 
     for (int i = 0; i < c->n; i++)
     {
@@ -146,14 +147,51 @@ cliques *cliques_init(graph *g)
         Count[cu]++;
     }
 
+    int *marks = calloc(c->n, sizeof(int));
+
+    for (int i = 0; i < c->n; i++)
+    {
+        int count = 0;
+        for (int j = 0; j < c->D[i]; j++)
+        {
+            int u = c->C[i][j];
+            for (int k = 0; k < g->D[u]; k++)
+            {
+                int v = g->V[u][k];
+                if (marks[c->FM[v]] == 0)
+                    count++;
+                marks[c->FM[v]]++;
+            }
+        }
+
+        c->V[i] = malloc(sizeof(int) * count);
+        c->EW[i] = malloc(sizeof(int) * count);
+
+        count = 0;
+        for (int j = 0; j < c->D[i]; j++)
+        {
+            int u = c->C[i][j];
+            for (int k = 0; k < g->D[u]; k++)
+            {
+                int v = g->V[u][k];
+                if (marks[c->FM[v]] == 0)
+                    continue;
+
+                c->V[i][count] = c->FM[v];
+                c->EW[i][count] = marks[c->FM[v]];
+                marks[c->FM[v]] = 0;
+            }
+        }
+    }
+
     update_ub(c, g);
-    // printf("%lld\n", c->ub);
+    printf("%d %lld\n", nc, c->ub);
 
     clear_clique_edges(g, c);
 
-    free(Clique);
     free(Clique_size);
     free(Count);
+    free(marks);
 
     return c;
 }
@@ -171,14 +209,14 @@ void cliques_free(cliques *c)
 
 void print_elements(graph *g, int u)
 {
-    if (g->pl[u] == u)
+    if (g->p1[u] == u)
     {
         printf(" %d", u);
     }
     else
     {
-        print_elements(g, g->pl[u]);
-        print_elements(g, g->pr[u]);
+        print_elements(g, g->p1[u]);
+        print_elements(g, g->p2[u]);
     }
 }
 
@@ -252,9 +290,7 @@ void cliques_merge(cliques *c, graph *g, int c1, int c2)
                 continue;
 
             int w = g->n;
-            graph_add_vertex(g, g->W[u] + g->W[v]);
-            g->pl[w] = u;
-            g->pr[w] = v;
+            graph_add_vertex(g, g->W[u] + g->W[v], u, v);
 
             if (g->W[u] + g->W[v] > new_max)
             {

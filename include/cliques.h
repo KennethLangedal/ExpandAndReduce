@@ -4,8 +4,12 @@
 
 typedef struct
 {
-    long long n, ub;
+    int n;
+    long long ub;
     int **C, *D;
+
+    int *FM;
+    int **V, **EW;
 } cliques;
 
 cliques *cliques_init(graph *g);

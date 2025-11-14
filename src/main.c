@@ -7,14 +7,14 @@
 
 void rec_mark(graph *g, int *M, int u)
 {
-    if (g->pl[u] == u)
+    if (g->p1[u] == u)
     {
         M[u] = 1;
     }
     else
     {
-        rec_mark(g, M, g->pl[u]);
-        rec_mark(g, M, g->pr[u]);
+        rec_mark(g, M, g->p1[u]);
+        rec_mark(g, M, g->p2[u]);
     }
 }
 
@@ -22,6 +22,8 @@ void clique_reduce(graph *g)
 {
     graph *gc = graph_copy(g);
     cliques *c = cliques_init(gc);
+
+    exit(0);
 
     int limit = 2;
     int last = 0;
@@ -86,7 +88,7 @@ void clique_reduce(graph *g)
         last = 0;
 
         cliques_merge(c, gc, c1, c2);
-        printf("%lld %lld %lld %lld\n", c->n, c->ub, gc->nr, gc->m / 2);
+        printf("%d %lld %d %d\n", c->n, c->ub, gc->nr, gc->m / 2);
     }
     printf("-----------------------------------\n");
 
@@ -137,7 +139,7 @@ int main(int argc, char **argv)
 
     int org_n = g->n;
 
-    printf("%lld %lld\n", g->nr, g->m / 2);
+    printf("%d %d\n", g->nr, g->m / 2);
 
     for (int t = 0; t < 3; t++)
     {
@@ -162,13 +164,13 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("%lld %lld\n", g->nr, g->m / 2);
+    printf("%d %d\n", g->nr, g->m / 2);
 
     for (int i = 0; i < 1; i++)
     {
         clique_reduce(g);
 
-        printf("%lld %lld\n", g->nr, g->m / 2);
+        printf("%d %d\n", g->nr, g->m / 2);
     }
 
     int *FM = malloc(sizeof(int) * g->n);
