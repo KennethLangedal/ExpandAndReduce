@@ -109,7 +109,7 @@ cliques *cliques_init(graph *g)
 
     int nc = greedy_cliques(g, Order, Clique, Clique_size, Count);
 
-    for (int i = 0; i < 20; i++)
+    for (int i = 0; i < 100; i++)
     {
         qsort_r(Order, g->n, sizeof(int), compare_clique, Clique);
 
@@ -142,7 +142,9 @@ cliques *cliques_init(graph *g)
     {
         if (!g->A[u])
             continue;
-        int cu = Clique[u] - 1;
+
+        Clique[u]--;
+        int cu = Clique[u];
         c->C[cu][Count[cu]] = u;
         Count[cu]++;
     }
@@ -201,10 +203,15 @@ void cliques_free(cliques *c)
     for (int i = 0; i < c->n; i++)
     {
         free(c->C[i]);
+        free(c->V[i]);
+        free(c->EW[i]);
     }
 
     free(c->C);
     free(c->D);
+    free(c->FM);
+    free(c->V);
+    free(c->EW);
 }
 
 void print_elements(graph *g, int u)

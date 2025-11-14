@@ -33,4 +33,4 @@ void screen_mouse_down(screen *s, int x, int y);
 
 void screen_mouse_up(screen *s);
 
-void screen_mose_move(screen *s, int x, int y);
+void screen_mouse_move(screen *s, int x, int y);

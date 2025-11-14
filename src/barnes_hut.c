@@ -132,6 +132,9 @@ void barnes_hut_populate(barnes_hut *bh, graph *g)
 
     for (int u = 0; u < g->n; u++)
     {
+        if (!g->A[u])
+            continue;
+
         int p = 0;
         float x = bh->X[u], y = bh->Y[u];
         double area = M_PI * (double)(bh->R[u] * bh->R[u]);
@@ -200,6 +203,9 @@ void barnes_hut_forces_repell(barnes_hut *bh, graph *g)
 #pragma omp parallel for
     for (int u = 0; u < g->n; u++)
     {
+        if (!g->A[u])
+            continue;
+
         int *Queue = bh->Queue[omp_get_thread_num()];
         int *Queue_width = bh->Queue_mark[omp_get_thread_num()];
 
@@ -299,6 +305,9 @@ void barnes_hut_forces_spring(barnes_hut *bh, graph *g)
 #pragma omp parallel for
     for (int u = 0; u < g->n; u++)
     {
+        if (!g->A[u])
+            continue;
+
         float x = bh->X[u], y = bh->Y[u];
 
         float dx_g = gx - x,
@@ -309,11 +318,9 @@ void barnes_hut_forces_spring(barnes_hut *bh, graph *g)
         bh->fX[u] += (dx_g / d_g) * bh->k_gravity;
         bh->fY[u] += (dy_g / d_g) * bh->k_gravity;
 
-        float degree = g->V[u + 1] - g->V[u];
-
-        for (int i = g->V[u]; i < g->V[u + 1]; i++)
+        for (int i = 0; i < g->D[u]; i++)
         {
-            int v = g->E[i];
+            int v = g->V[u][i];
             if (v == u)
                 continue;
 
@@ -324,8 +331,8 @@ void barnes_hut_forces_spring(barnes_hut *bh, graph *g)
             float rest_l = bh->rest_l + bh->R[u] + bh->R[v];
             float s = bh->k_spring * (d - rest_l);
 
-            bh->fX[u] += s * (dx / d) / degree;
-            bh->fY[u] += s * (dy / d) / degree;
+            bh->fX[u] += s * (dx / d) / (float)g->D[u];
+            bh->fY[u] += s * (dy / d) / (float)g->D[u];
         }
     }
 }
@@ -345,7 +352,7 @@ void barnes_hut_step(barnes_hut *bh, graph *g)
 #pragma omp parallel for
     for (int u = 0; u < g->n; u++)
     {
-        if (bh->Tabu[u])
+        if (bh->Tabu[u] || !g->A[u])
         {
             bh->vX[u] = 0.0f;
             bh->vY[u] = 0.0f;

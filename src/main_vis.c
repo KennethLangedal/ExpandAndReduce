@@ -1,6 +1,8 @@
 #include "graph.h"
 #include "barnes_hut.h"
 #include "screen.h"
+#include "algorithms.h"
+#include "cliques.h"
 
 #include <SDL2/SDL.h>
 #include <stdint.h>
@@ -34,18 +36,54 @@ int main(int argc, char **argv)
     graph *g = graph_parse(f);
     fclose(f);
 
-    printf("%lld %lld\n", g->n, g->m);
+    printf("%d %d\n", g->n, g->m);
 
-    clustering_sparse *c = clustering_sparse_init(g);
+    long long offset = 0;
+
+    for (int t = 0; t < 20; t++)
+    {
+        for (int u = 0; u < g->n; u++)
+        {
+            if (!g->A[u])
+                continue;
+
+            if (g->D[u] == 0)
+            {
+                offset += g->W[u];
+                graph_deactivate_vertex(g, u);
+                continue;
+            }
+
+            for (int i = 0; i < g->D[u]; i++)
+            {
+                int v = g->V[u][i];
+                if (g->W[u] > g->W[v] || g->D[v] > g->D[u])
+                    continue;
+
+                // Higher or equal weight, smaller or equal degree -> Could be dominated
+
+                if (set_is_subset_except_one(g->V[v], g->D[v], g->V[u], g->D[u], u))
+                {
+                    graph_deactivate_vertex(g, u);
+                    break;
+                }
+            }
+        }
+    }
+
+    printf("%d %d\n", g->nr, g->m / 2);
 
     screen *s = screen_init(HEIGHT, WIDTH);
     barnes_hut *bh = barnes_hut_init(g);
     uint32_t *Colors = malloc(sizeof(uint32_t) * g->n);
 
+    cliques *c = cliques_init(g);
+
     for (int u = 0; u < g->n; u++)
     {
         bh->R[u] = 1;         // sqrt((double)gc->VW[u] / M_PI);
-        Colors[u] = 0x2c2c2c; // hash_color(c->Cluster[u]); // u
+        // Colors[u] = 0x2c2c2c;
+        Colors[u] = hash_color(c->FM[u]);
     }
 
     int mbd = 0, selected = -1;
@@ -94,7 +132,7 @@ int main(int argc, char **argv)
             }
             else if (e.type == SDL_MOUSEMOTION && s->drag > 0)
             {
-                screen_mose_move(s, e.motion.x, e.motion.y);
+                screen_mouse_move(s, e.motion.x, e.motion.y);
                 bh->rest_l = s->sliders[0];
                 bh->k_spring = (s->sliders[1] * 2.0f) / 100.0f;
                 bh->k_repel = (s->sliders[2] * 2.0f) / 100.0f;
@@ -124,49 +162,6 @@ int main(int argc, char **argv)
             else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_e)
             {
                 draw_edges = !draw_edges;
-            }
-            else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_c)
-            {
-                for (int u = 0; u < g->n; u++)
-                {
-                    clustering_sparse_best_move(c, g, u);
-                }
-
-                for (int u = 0; u < g->n; u++)
-                {
-                    Colors[u] = hash_color(c->Cluster[u]);
-                }
-            }
-            else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_o)
-            {
-                clustering_sparse_renumber_clusters(c, g);
-
-                graph *gc = graph_contract_clusters(g, c->cluster_count, c->Cluster);
-                clustering_sparse *cc = clustering_sparse_init(gc);
-
-                for (int u = 0; u < gc->n; u++)
-                {
-                    clustering_sparse_best_move(cc, gc, u);
-                }
-
-                clustering_sparse_set_clustering_from_overlay(c, g, cc);
-
-                graph_free(gc);
-                clustering_sparse_free(cc);
-
-                for (int u = 0; u < g->n; u++)
-                {
-                    Colors[u] = hash_color(c->Cluster[u]);
-                }
-            }
-            else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_r)
-            {
-                clustering_sparse_reset(c, g);
-                
-                for (int u = 0; u < g->n; u++)
-                {
-                    Colors[u] = hash_color(c->Cluster[u]);
-                }
             }
             else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_q)
             {

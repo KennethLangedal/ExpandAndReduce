@@ -1,14 +1,14 @@
 SHELL = /usr/bin/env bash
 
 CC ?= gcc
-override CFLAGS += -std=gnu17 -O3 -I include -g
+override CFLAGS += -std=gnu17 -fopenmp -O3 -I include -g
 
 OBJ_SHARED = graph.o cliques.o
 
 OBJ_MWIS = main.o $(OBJ_SHARED)
 OBJ_MWIS := $(addprefix bin/, $(OBJ_MWIS))
 
-OBJ_VIS = main_vis.o sreen.o barnes_hut.o $(OBJ_SHARED)
+OBJ_VIS = main_vis.o screen.o barnes_hut.o $(OBJ_SHARED)
 OBJ_VIS := $(addprefix bin/, $(OBJ_VIS))
 
 DEP = $(OBJ_MWIS) $(OBJ_VIS)

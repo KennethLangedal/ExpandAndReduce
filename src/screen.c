@@ -130,14 +130,17 @@ void screen_render_frame(screen *s, graph *g, uint32_t *Colors, float *X, float 
 #pragma omp for
         for (int u = 0; u < g->n; u++)
         {
+            if (!g->A[u])
+                continue;
+
             int ux = (X[u] + s->root_x) * s->zoom, uy = (Y[u] + s->root_y) * s->zoom;
 
             if (!draw_edges)
                 continue;
 
-            for (int i = g->V[u]; i < g->V[u + 1]; i++)
+            for (int i = 0; i < g->D[u]; i++)
             {
-                int v = g->E[i];
+                int v = g->V[u][i];
 
                 int vx = (X[v] + s->root_x) * s->zoom, vy = (Y[v] + s->root_y) * s->zoom;
 
@@ -145,9 +148,12 @@ void screen_render_frame(screen *s, graph *g, uint32_t *Colors, float *X, float 
                     screen_draw_line(s, ux, uy, vx, vy, 0x00);
             }
         }
-// #pragma omp for
+        // #pragma omp for
         for (int u = 0; u < g->n; u++)
         {
+            if (!g->A[u])
+                continue;
+
             int ux = (X[u] + s->root_x) * s->zoom, uy = (Y[u] + s->root_y) * s->zoom;
             screen_draw_circle_filled(s, ux, uy, 2 + (s->zoom * R[u]), Colors[u], Colors[u]);
         }
@@ -179,7 +185,7 @@ void screen_mouse_up(screen *s)
     s->drag = 0;
 }
 
-void screen_mose_move(screen *s, int x, int y)
+void screen_mouse_move(screen *s, int x, int y)
 {
     if (s->drag == 0)
         return;

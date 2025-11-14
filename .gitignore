@@ -2,3 +2,6 @@ bin/*
 !bin/.gitignore
 
 MWIS
+VIS
+
+.vscode/*
