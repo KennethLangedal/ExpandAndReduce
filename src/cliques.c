@@ -5,7 +5,11 @@
 
 #include <stdlib.h>
 #include <assert.h>
+#include <limits.h>
 
+/*
+    Greedy clique cover inspired by graph coloring
+*/
 int greedy_cliques(graph *g, int *Order, int *Clique, int *Clique_size, int *Count)
 {
     int nc = 0;
@@ -54,6 +58,7 @@ int greedy_cliques(graph *g, int *Order, int *Clique, int *Clique_size, int *Cou
     return nc;
 }
 
+// Compare clique assignment
 int compare_clique(const void *a, const void *b, void *c)
 {
     int u = *(int *)a;
@@ -69,7 +74,7 @@ void update_ub(cliques *c, graph *g)
     for (int i = 0; i < c->n; i++)
     {
         long long max = 0;
-        for (int j = 0; j < c->D[i]; j++)
+        for (int j = 0; j < c->S[i]; j++)
         {
             int u = c->C[i][j];
             if (g->W[u] > max)
@@ -83,10 +88,10 @@ void clear_clique_edges(graph *g, cliques *c)
 {
     for (int i = 0; i < c->n; i++)
     {
-        for (int j = 0; j < c->D[i]; j++)
+        for (int j = 0; j < c->S[i]; j++)
         {
             int u = c->C[i][j];
-            for (int k = j + 1; k < c->D[i]; k++)
+            for (int k = j + 1; k < c->S[i]; k++)
             {
                 int v = c->C[i][k];
                 graph_remove_edge(g, u, v);
@@ -109,7 +114,7 @@ cliques *cliques_init(graph *g)
 
     int nc = greedy_cliques(g, Order, Clique, Clique_size, Count);
 
-    for (int i = 0; i < 100; i++)
+    for (int i = 0; i < 10; i++)
     {
         qsort_r(Order, g->n, sizeof(int), compare_clique, Clique);
 
@@ -127,15 +132,13 @@ cliques *cliques_init(graph *g)
     c->n = nc;
 
     c->C = malloc(sizeof(int *) * c->n);
-    c->D = malloc(sizeof(int) * c->n);
+    c->S = malloc(sizeof(int) * c->n);
     c->FM = Clique;
-    c->V = malloc(sizeof(int *) * c->n);
-    c->EW = malloc(sizeof(int *) * c->n);
 
     for (int i = 0; i < c->n; i++)
     {
-        c->D[i] = Clique_size[i + 1];
-        c->C[i] = malloc(sizeof(int) * c->D[i]);
+        c->S[i] = Clique_size[i + 1];
+        c->C[i] = malloc(sizeof(int) * c->S[i]);
     }
 
     for (int u = 0; u < g->n; u++)
@@ -143,57 +146,58 @@ cliques *cliques_init(graph *g)
         if (!g->A[u])
             continue;
 
-        Clique[u]--;
-        int cu = Clique[u];
+        c->FM[u]--; // Change from 1-indexed cliques to forward mapping
+        int cu = c->FM[u];
         c->C[cu][Count[cu]] = u;
         Count[cu]++;
     }
 
-    int *marks = calloc(c->n, sizeof(int));
+    update_ub(c, g);
 
+    clear_clique_edges(g, c);
+
+    c->gc = graph_init(1);
     for (int i = 0; i < c->n; i++)
     {
-        int count = 0;
-        for (int j = 0; j < c->D[i]; j++)
+        graph_add_vertex(c->gc, c->S[i] + SIZE_OFFSET, 0, 0);
+    }
+    for (int i = 0; i < c->n; i++)
+    {
+        for (int j = 0; j < c->S[i]; j++)
         {
             int u = c->C[i][j];
             for (int k = 0; k < g->D[u]; k++)
             {
                 int v = g->V[u][k];
-                if (marks[c->FM[v]] == 0)
-                    count++;
-                marks[c->FM[v]]++;
-            }
-        }
+                int dest = c->FM[v];
 
-        c->V[i] = malloc(sizeof(int) * count);
-        c->EW[i] = malloc(sizeof(int) * count);
-
-        count = 0;
-        for (int j = 0; j < c->D[i]; j++)
-        {
-            int u = c->C[i][j];
-            for (int k = 0; k < g->D[u]; k++)
-            {
-                int v = g->V[u][k];
-                if (marks[c->FM[v]] == 0)
+                assert(dest != i);
+                if (dest < i)
                     continue;
 
-                c->V[i][count] = c->FM[v];
-                c->EW[i][count] = marks[c->FM[v]];
-                marks[c->FM[v]] = 0;
+                if (!graph_is_neighbor(c->gc, i, dest))
+                    graph_add_edge(c->gc, i, dest, 1);
+                else
+                    graph_increase_edge_weight(c->gc, i, dest, 1);
             }
         }
     }
 
-    update_ub(c, g);
-    printf("%d %lld\n", nc, c->ub);
-
-    clear_clique_edges(g, c);
-
     free(Clique_size);
     free(Count);
-    free(marks);
+
+    c->mn = -1;
+    c->mnr = -1;
+    c->c1 = -1;
+    c->c2 = -1;
+    c->V = malloc(sizeof(int) * (MAX_ELEMENTS + 1));
+    c->R = malloc(sizeof(int) * MAX_ELEMENTS);
+    c->L = malloc(sizeof(int) * MAX_ELEMENTS);
+    c->X = malloc(sizeof(int) * MAX_ELEMENTS);
+    c->Y = malloc(sizeof(int) * MAX_ELEMENTS);
+    c->O = malloc(sizeof(int) * MAX_ELEMENTS);
+    c->W = malloc(sizeof(long long) * MAX_ELEMENTS);
+    c->E = malloc(sizeof(int) * MAX_EDGES);
 
     return c;
 }
@@ -203,244 +207,293 @@ void cliques_free(cliques *c)
     for (int i = 0; i < c->n; i++)
     {
         free(c->C[i]);
-        free(c->V[i]);
-        free(c->EW[i]);
     }
 
     free(c->C);
-    free(c->D);
+    free(c->S);
     free(c->FM);
+
+    graph_free(c->gc);
+
     free(c->V);
-    free(c->EW);
+    free(c->R);
+    free(c->L);
+    free(c->X);
+    free(c->Y);
+    free(c->O);
+    free(c->W);
+    free(c->E);
 }
 
-void print_elements(graph *g, int u)
+typedef struct
 {
-    if (g->p1[u] == u)
-    {
-        printf(" %d", u);
-    }
-    else
-    {
-        print_elements(g, g->p1[u]);
-        print_elements(g, g->p2[u]);
-    }
+    long long *W;
+    int *V;
+} merging_data;
+
+int compare_vertices(const void *a, const void *b, void *c)
+{
+    int u = *(int *)a;
+    int v = *(int *)b;
+    merging_data *md = (merging_data *)c;
+
+    if (md->W[u] > md->W[v] || (md->W[u] == md->W[v] && md->V[u + 1] - md->V[u] < md->V[v + 1] - md->V[v]))
+        return -1;
+
+    if (md->W[u] < md->W[v] || (md->W[u] == md->W[v] && md->V[u + 1] - md->V[u] > md->V[v + 1] - md->V[v]))
+        return 1;
+
+    return 0;
 }
 
-void print(cliques *c, graph *g)
+int cliques_merge_prep(cliques *c, graph *g, int c1, int c2, int stop)
 {
-    printf("Graph:\n");
-    for (int u = 0; u < g->n; u++)
-    {
-        if (!g->A[u])
-            continue;
-        printf("%d (", u);
-        print_elements(g, u);
-        printf(") %lld:", g->W[u]);
+    int n = 0, nr = 0, nd = 0, m = 0;
 
-        for (int i = 0; i < g->D[u]; i++)
-        {
-            printf(" %d", g->V[u][i]);
-        }
-        printf("\n");
-    }
+    for (int i = 0; i < c->S[c1]; i++)
+        assert(g->A[c->C[c1][i]]);
+    for (int i = 0; i < c->S[c2]; i++)
+        assert(g->A[c->C[c2][i]]);
 
-    printf("Cliques:\n");
-    for (int i = 0; i < c->n; i++)
-    {
-        printf("%d: ", i);
-        for (int j = 0; j < c->D[i]; j++)
-        {
-            printf(" %d", c->C[i][j]);
-        }
-        printf("\n");
-    }
-}
+    c->mn = -1;
+    c->mnr = -1;
+    c->mnd = -1;
+    c->c1 = -1;
+    c->c2 = -1;
 
-void cliques_merge(cliques *c, graph *g, int c1, int c2)
-{
-    // printf("Merging %d and %d\n", c1, c2);
-    // print(c, g);
-
-    int *marks = calloc(g->n, sizeof(int));
-    long long c1_max = 0, c2_max = 0;
-    for (int i = 0; i < c->D[c1]; i++)
+    // Copy elements in c1
+    for (int i = 0; i < c->S[c1]; i++)
     {
         int u = c->C[c1][i];
-        marks[u] = 1;
-        if (g->W[u] > c1_max)
-            c1_max = g->W[u];
-    }
-    for (int i = 0; i < c->D[c2]; i++)
-    {
-        int u = c->C[c2][i];
-        marks[u] = 1;
-        if (g->W[u] > c2_max)
-            c2_max = g->W[u];
-    }
-    c->ub -= c1_max;
-    c->ub -= c2_max;
+        if (n >= MAX_ELEMENTS || n >= stop)
+            return 0;
 
-    // printf("Adding new vertices\n");
-
-    int s = g->n;
-    long long new_max = c2_max > c1_max ? c2_max : c1_max;
-    for (int i = 0; i < c->D[c1]; i++)
-    {
-        int u = c->C[c1][i];
-        for (int j = 0; j < c->D[c2]; j++)
-        {
-            int v = c->C[c2][j];
-            assert(v < g->n);
-            assert(u != v);
-            if (graph_is_neighbor(g, u, v))
-                continue;
-
-            int w = g->n;
-            graph_add_vertex(g, g->W[u] + g->W[v], u, v);
-
-            if (g->W[u] + g->W[v] > new_max)
-            {
-                new_max = g->W[u] + g->W[v];
-            }
-
-            for (int k = 0; k < g->D[u]; k++)
-            {
-                int x = g->V[u][k];
-                if (marks[x])
-                    continue;
-
-                graph_add_edge(g, w, x);
-            }
-            for (int k = 0; k < g->D[v]; k++)
-            {
-                int x = g->V[v][k];
-                if (marks[x])
-                    continue;
-
-                if (graph_is_neighbor(g, w, x))
-                    continue;
-
-                graph_add_edge(g, w, x);
-            }
-        }
-    }
-
-    for (int i = 0; i < c->D[c1]; i++)
-    {
-        int u = c->C[c1][i];
+        c->V[n] = m;
+        c->R[n] = u;
+        c->L[n] = u;
+        c->W[n] = g->W[u];
+        n++;
         for (int j = 0; j < g->D[u]; j++)
         {
             int v = g->V[u][j];
-            if (!marks[v])
+            if (c->FM[v] == c2)
                 continue;
 
-            graph_remove_edge(g, u, v);
-            j--;
+            if (m == MAX_EDGES)
+                return 0;
+            c->E[m++] = v;
         }
     }
-    for (int i = 0; i < c->D[c2]; i++)
+
+    // Copy elements in c2
+    for (int i = 0; i < c->S[c2]; i++)
     {
         int u = c->C[c2][i];
+        if (n >= MAX_ELEMENTS || n >= stop)
+            return 0;
+
+        c->V[n] = m;
+        c->R[n] = u;
+        c->L[n] = u;
+        c->W[n] = g->W[u];
+        n++;
         for (int j = 0; j < g->D[u]; j++)
         {
             int v = g->V[u][j];
-            if (!marks[v])
+            if (c->FM[v] == c1)
                 continue;
 
-            graph_remove_edge(g, u, v);
-            j--;
+            if (m == MAX_EDGES)
+                return 0;
+            c->E[m++] = v;
         }
     }
 
-    // printf("Constructing clique\n");
+    // Construct new vertices
+    for (int u = 0; u < c->S[c1]; u++)
+    {
+        for (int v = c->S[c1]; v < c->S[c1] + c->S[c2]; v++)
+        {
+            if (graph_is_neighbor(g, c->R[u], c->R[v]))
+                continue;
 
-    int n = c->D[c1] + c->D[c2] + (g->n - s);
-    int *tmp = malloc(sizeof(int) * n);
-    for (int i = 0; i < c->D[c1]; i++)
-        tmp[i] = c->C[c1][i];
-    for (int i = 0; i < c->D[c2]; i++)
-        tmp[c->D[c1] + i] = c->C[c2][i];
-    for (int i = 0; i < g->n - s; i++)
-        tmp[c->D[c1] + c->D[c2] + i] = s + i;
+            if (n >= MAX_ELEMENTS || n >= stop)
+                return 0;
 
-    // printf("Removing edges\n");
+            c->V[n] = m;
+            c->W[n] = c->W[u] + c->W[v];
+            c->L[n] = c->L[u]; // Original id for first IS
+            c->R[n] = c->R[v]; // Original id for second IS
+            n++;
 
-    // for (int i = 0; i < n; i++)
-    // {
-    //     int u = tmp[i];
-    //     if (g->W[u] > new_max)
-    //         new_max = g->W[u];
-    //     for (int j = i + 1; j < n; j++)
-    //     {
-    //         int v = tmp[j];
-    //         if (graph_is_neighbor(g, u, v))
-    //             graph_remove_edge(g, u, v);
-    //     }
-    // }
+            int i = c->V[u], j = c->V[v];
+            while (i < c->V[u + 1] && j < c->V[v + 1])
+            {
+                if (m == MAX_EDGES)
+                    return 0;
 
-    c->ub += new_max;
+                if (c->E[i] < c->E[j])
+                {
+                    c->E[m++] = c->E[i++];
+                }
+                else if (c->E[j] < c->E[i])
+                {
+                    c->E[m++] = c->E[j++];
+                }
+                else
+                {
+                    c->E[m++] = c->E[i++];
+                    j++;
+                }
+            }
 
-    free(c->C[c1]);
-    c->C[c1] = tmp;
-    c->D[c1] = n;
+            while (i < c->V[u + 1])
+            {
+                if (m == MAX_EDGES)
+                    return 0;
+                c->E[m++] = c->E[i++];
+            }
+            while (j < c->V[v + 1])
+            {
+                if (m == MAX_EDGES)
+                    return 0;
+                c->E[m++] = c->E[j++];
+            }
+        }
+    }
 
-    // printf("Checking domination, before %d\n", n);
+    c->V[n] = m;
+
+    for (int i = 0; i < n; i++)
+        c->O[i] = i;
+
+    merging_data md = {.V = c->V, .W = c->W};
+    qsort_r(c->O, n, sizeof(int), compare_vertices, &md);
 
     for (int i = 0; i < n; i++)
     {
-        int u = tmp[i];
+        int u = c->O[i];
 
-        for (int j = 0; j < n; j++)
+        int valid = 1;
+        for (int j = 0; j < nr; j++)
         {
-            int v = tmp[j];
-            if (u == v)
-                continue;
+            int v = c->X[j];
 
-            if (g->W[u] > g->W[v] || g->D[v] > g->D[u])
-                continue;
-
-            if (set_is_subset_except_one(g->V[v], g->D[v], g->V[u], g->D[u], u))
+            if (set_is_subset(c->E + c->V[v], c->V[v + 1] - c->V[v], c->E + c->V[u], c->V[u + 1] - c->V[u]))
             {
-                graph_deactivate_vertex(g, u);
-                tmp[i] = tmp[n - 1];
-                n--;
-                i--;
+                valid = 0;
                 break;
+            }
+        }
+
+        if (valid)
+        {
+            c->X[nr++] = u;
+        }
+        else if (u < c->S[c1] + c->S[c2])
+        {
+            c->Y[nd++] = c->R[u];
+        }
+    }
+
+    c->mn = n;
+    c->mnr = nr;
+    c->mnd = nd;
+    c->c1 = c1;
+    c->c2 = c2;
+
+    return 1;
+}
+
+void cliques_merge(cliques *c, graph *g)
+{
+    int c1 = c->c1, c2 = c->c2;
+    if (c->c1 < 0)
+        return;
+
+    int max_c1 = 0, max_c2 = 0;
+    for (int i = 0; i < c->S[c1]; i++)
+        max_c1 = c->W[i] > max_c1 ? c->W[i] : max_c1;
+
+    for (int i = c->S[c1]; i < c->S[c2] + c->S[c1]; i++)
+        max_c2 = c->W[i] > max_c2 ? c->W[i] : max_c2;
+
+    int max_new = 0;
+    for (int i = 0; i < c->mnr; i++)
+        max_new = c->W[c->X[i]] > max_new ? c->W[c->X[i]] : max_new;
+
+    c->ub += max_new - (max_c1 + max_c2);
+
+    for (int i = 0; i < c->mnd; i++)
+        graph_deactivate_vertex(g, c->Y[i]);
+
+    int s = g->n;
+    int t = c->S[c1] + c->S[c2];
+    c->C[c1] = realloc(c->C[c1], sizeof(int) * c->mnr);
+    c->S[c1] = 0;
+
+    for (int i = 0; i < c->mnr; i++)
+    {
+        int u = c->X[i];
+
+        // Existing vertex
+        if (u < t)
+        {
+            int id = c->R[u];
+            c->C[c1][c->S[c1]++] = id;
+            c->FM[id] = c1;
+            for (int i = 0; i < g->D[id]; i++)
+            {
+                int v = g->V[id][i];
+                // Remove edges between c1 and c2
+                if (c->FM[v] == c1 || c->FM[v] == c2)
+                {
+                    graph_remove_edge(g, id, v);
+                    i--;
+                }
+            }
+        }
+        // New vertex
+        else
+        {
+            c->C[c1][c->S[c1]++] = g->n;
+            graph_add_vertex(g, c->W[u], c->L[u], c->R[u]);
+            for (int i = c->V[u]; i < c->V[u + 1]; i++)
+            {
+                int v = c->E[i];
+                graph_add_edge(g, g->n - 1, v, 1);
             }
         }
     }
 
-    c->D[c1] = n;
+    c->FM = realloc(c->FM, sizeof(int) * g->n);
+    for (int i = s; i < g->n; i++)
+        c->FM[i] = c1;
 
-    // if (n < 10)
-    // {
-    //     for (int i = 0; i < n; i++)
-    //     {
-    //         int u = tmp[i];
-    //         printf("%d (%lld): ", u, g->W[u]);
-    //         for (int j = 0; j < g->D[u]; j++)
-    //         {
-    //             int v = g->V[u][j];
-    //             printf("%d ", v);
-    //         }
-    //         printf("\n");
-    //     }
-    // }
+    graph_deactivate_vertex(c->gc, c2);
+    while (c->gc->D[c1] > 0)
+        graph_remove_edge(c->gc, c1, c->gc->V[c1][0]);
 
-    // printf("After %d\n", n);
+    c->S[c2] = 0;
+    free(c->C[c2]);
+    c->C[c2] = NULL;
 
-    c->D[c2] = c->D[c->n - 1];
-    c->C[c2] = c->C[c->n - 1];
-    c->n--;
+    graph_change_vertex_weight(c->gc, c1, c->mnr + SIZE_OFFSET);
 
-    free(marks);
+    // Fix the clique graph
+    for (int i = 0; i < c->mnr; i++)
+    {
+        int u = c->X[i];
+        for (int j = c->V[u]; j < c->V[u + 1]; j++)
+        {
+            int v = c->E[j];
+            if (!g->A[v] || c->FM[v] == c1 || c->FM[v] == c2)
+                continue;
 
-    // print(c, g);
-
-    // static int t = 3;
-    // t--;
-
-    // if (t == 0)
-    //     exit(0);
+            if (graph_is_neighbor(c->gc, c1, c->FM[v]))
+                graph_increase_edge_weight(c->gc, c1, c->FM[v], 1);
+            else
+                graph_add_edge(c->gc, c1, c->FM[v], 1);
+        }
+    }
 }

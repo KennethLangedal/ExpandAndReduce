@@ -117,7 +117,43 @@ void screen_draw_circle_filled(screen *s, int xm, int ym, int r, uint32_t draw_c
     }
 }
 
-void screen_render_frame(screen *s, graph *g, uint32_t *Colors, float *X, float *Y, int *R, int draw_edges)
+void screen_draw_thick_line(screen *s,
+                            int x0, int y0,
+                            int x1, int y1,
+                            uint32_t color,
+                            int thickness)
+{
+    if (thickness < 1)
+        thickness = 1;
+    int r = thickness / 2; // radius of the thick brush
+
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy, e2;
+
+    while (1)
+    {
+        // Draw a filled disc at each Bresenham pixel:
+        screen_draw_circle_filled(s, x0, y0, r, color, color);
+
+        if (x0 == x1 && y0 == y1)
+            break;
+
+        e2 = 2 * err;
+        if (e2 >= dy)
+        {
+            err += dy;
+            x0 += sx;
+        }
+        if (e2 <= dx)
+        {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+void screen_render_frame(screen *s, graph *g, uint32_t *Colors, float *X, float *Y, int draw_edges)
 {
 #pragma omp parallel
     {
@@ -145,17 +181,19 @@ void screen_render_frame(screen *s, graph *g, uint32_t *Colors, float *X, float 
                 int vx = (X[v] + s->root_x) * s->zoom, vy = (Y[v] + s->root_y) * s->zoom;
 
                 if (u < v)
+                    // screen_draw_thick_line(s, ux, uy, vx, vy, 0x00, s->zoom * sqrt(sqrt(g->EW[u][i])) + 1);
                     screen_draw_line(s, ux, uy, vx, vy, 0x00);
             }
         }
-        // #pragma omp for
+
         for (int u = 0; u < g->n; u++)
         {
             if (!g->A[u])
                 continue;
 
             int ux = (X[u] + s->root_x) * s->zoom, uy = (Y[u] + s->root_y) * s->zoom;
-            screen_draw_circle_filled(s, ux, uy, 2 + (s->zoom * R[u]), Colors[u], Colors[u]);
+            int ru = sqrt((double)g->W[u] / M_PI);
+            screen_draw_circle_filled(s, ux, uy, (s->zoom * ru) + 2, Colors[u], Colors[u]);
         }
 
         for (int i = 0; i < SLIDERS; i++)

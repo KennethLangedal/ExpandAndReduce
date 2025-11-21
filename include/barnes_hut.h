@@ -2,19 +2,18 @@
 
 #include "graph.h"
 
-#define INNER_WIDTH 32
-#define GRID_WIDTH 65536
+#define INNER_WIDTH 8
+#define GRID_WIDTH 16384
 
 typedef struct
 {
     int m, l;
-    double *CX, *CY, *Mass, *S, *Ri;
+    double *CX, *CY, *Mass, *C, *S, *Ri;
     int **Queue, **Queue_mark;
     int *Tabu;
 
     int n;
     float *X, *Y;
-    int *R;
     float *fX, *fY, *vX, *vY;
 
     float rest_l;

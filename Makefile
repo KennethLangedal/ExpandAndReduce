@@ -17,7 +17,7 @@ DEP := $(sort $(DEP))
 vpath %.c src
 vpath %.h include
 
-all : MWIS VIS
+all : VIS
 
 -include $(DEP:.o=.d)
 
