@@ -1,6 +1,7 @@
 #pragma once
 
 #include <time.h>
+#include <limits.h>
 
 static inline double get_wtime()
 {
@@ -26,6 +27,88 @@ static inline int lower_bound(const int *A, int n, int x)
     }
     s += (n == 1 && s[0] < x);
     return s - A;
+}
+
+// Compute union between A and B with x and y included
+static inline int set_union_pluss_two(const int *A, int a, const int *B, int b, int x, int y, int *C)
+{
+    int i = 0, j = 0, k = 0;
+
+    int v1 = x < y ? x : y;
+    int v2 = x < y ? y : x;
+
+    while (i < a && j < b)
+    {
+        int min = A[i] < B[j] ? A[i] : B[j];
+        if (v1 < min)
+        {
+            C[k] = v1;
+            k++;
+            v1 = v2;
+            v2 = INT_MAX;
+            continue;
+        }
+
+        if (A[i] < B[j])
+        {
+            C[k] = A[i];
+            k++;
+            i++;
+        }
+        else if (A[i] > B[j])
+        {
+            C[k] = B[j];
+            k++;
+            j++;
+        }
+        else
+        {
+            C[k] = A[i];
+            k++;
+            i++;
+            j++;
+        }
+    }
+
+    while (i < a)
+    {
+        if (v1 < A[i])
+        {
+            C[k] = v1;
+            k++;
+            v1 = v2;
+            v2 = INT_MAX;
+            continue;
+        }
+        C[k] = A[i];
+        k++;
+        i++;
+    }
+
+    while (j < b)
+    {
+        if (v1 < B[j])
+        {
+            C[k] = v1;
+            k++;
+            v1 = v2;
+            v2 = INT_MAX;
+            continue;
+        }
+        C[k] = B[j];
+        k++;
+        j++;
+    }
+
+    while (v1 < INT_MAX)
+    {
+        C[k] = v1;
+        k++;
+        v1 = v2;
+        v2 = INT_MAX;
+    }
+
+    return k;
 }
 
 // Test if A and B are equal
@@ -100,6 +183,123 @@ static inline int set_is_subset_except_one(const int *A, int a, const int *B, in
 
     if (i < a && A[i] == x)
         i++;
+
+    return i == a;
+}
+
+// Test if A is a subset of B, ignoring x from A, allowing 1 more element in A (returned in c)
+static inline int set_is_subset_except_one_pluss_one(const int *A, int a, const int *B, int b, int x, int *c)
+{
+    *c = -1;
+
+    if (b < a - 2)
+        return 0;
+
+    int i = 0, j = 0;
+    while (i < a && j < b)
+    {
+        if (A[i] == B[j])
+        {
+            i++;
+            j++;
+        }
+        else if (A[i] > B[j])
+        {
+            j++;
+        }
+        else if (A[i] == x)
+        {
+            i++;
+        }
+        else if (*c < 0)
+        {
+            *c = A[i];
+            i++;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+
+    while (i < a)
+    {
+        if (A[i] == x)
+            i++;
+        else if (*c < 0)
+        {
+            *c = A[i];
+            i++;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+
+    return i == a;
+}
+
+// Test if A is a subset of B, ignoring x from A, allowing 2 more element in A (returned in c and d)
+static inline int set_is_subset_except_one_pluss_two(const int *A, int a, const int *B, int b, int x, int *c, int *d)
+{
+    *c = -1;
+    *d = -1;
+
+    if (b < a - 3)
+        return 0;
+
+    int i = 0, j = 0;
+    while (i < a && j < b)
+    {
+        if (A[i] == B[j])
+        {
+            i++;
+            j++;
+        }
+        else if (A[i] > B[j])
+        {
+            j++;
+        }
+        else if (A[i] == x)
+        {
+            i++;
+        }
+        else if (*c < 0)
+        {
+            *c = A[i];
+            i++;
+        }
+        else if (*d < 0)
+        {
+            *d = A[i];
+            i++;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+
+    while (i < a)
+    {
+        if (A[i] == x)
+            i++;
+        else if (*c < 0)
+        {
+            *c = A[i];
+            i++;
+        }
+        else if (*d < 0)
+        {
+            *d = A[i];
+            i++;
+        }
+        else
+        {
+            return 0;
+        }
+    }
 
     return i == a;
 }

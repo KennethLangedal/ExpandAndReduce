@@ -153,7 +153,7 @@ void screen_draw_thick_line(screen *s,
     }
 }
 
-void screen_render_frame(screen *s, graph *g, uint32_t *Colors, float *X, float *Y, int draw_edges)
+void screen_render_frame(screen *s, graph *g, cliques *c, graph *g_org, uint32_t *Colors, float *X, float *Y, int draw_edges)
 {
 #pragma omp parallel
     {
@@ -181,8 +181,18 @@ void screen_render_frame(screen *s, graph *g, uint32_t *Colors, float *X, float 
                 int vx = (X[v] + s->root_x) * s->zoom, vy = (Y[v] + s->root_y) * s->zoom;
 
                 if (u < v)
+                {
+                    int max_u = c->C[u][0];
+                    int unique_u = c->S[u] == 1 || g_org->W[max_u] > g_org->W[c->C[u][1]];
+                    int max_v = c->C[v][0];
+                    int unique_v = c->S[v] == 1 || g_org->W[max_v] > g_org->W[c->C[v][1]];
+                    int adj = 0;
+                    if (unique_u && unique_v)
+                        adj = graph_is_neighbor(g_org, max_u, max_v);
+
                     // screen_draw_thick_line(s, ux, uy, vx, vy, 0x00, s->zoom * sqrt(sqrt(g->EW[u][i])) + 1);
-                    screen_draw_line(s, ux, uy, vx, vy, 0x00);
+                    screen_draw_line(s, ux, uy, vx, vy, (adj) ? 0xff0000 : 0x00);
+                }
             }
         }
 

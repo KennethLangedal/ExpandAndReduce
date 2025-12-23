@@ -1,9 +1,17 @@
 #include "graph.h"
 #include "algorithms.h"
 
+#include <string.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <sys/mman.h>
+
+#define ADD_VERTEX 0
+#define REMOVE_VERTEX 1
+#define ADD_EDGE 2
+#define REMOVE_EDGE 3
+#define CHANGE_WEIGHT 4
+#define ADD_VERTEX_FULL 5
 
 void graph_increase_size(graph *g)
 {
@@ -11,8 +19,6 @@ void graph_increase_size(graph *g)
     g->V = realloc(g->V, sizeof(int *) * g->_a);
     g->D = realloc(g->D, sizeof(int) * g->_a);
     g->W = realloc(g->W, sizeof(long long) * g->_a);
-    if (g->EW != NULL)
-        g->EW = realloc(g->EW, sizeof(long long *) * g->_a);
     g->A = realloc(g->A, sizeof(int) * g->_a);
 
     g->_A = realloc(g->_A, sizeof(int) * g->_a);
@@ -24,39 +30,30 @@ void graph_increase_size(graph *g)
     {
         g->_A[i] = 16;
         g->V[i] = malloc(sizeof(int) * g->_A[i]);
-        if (g->EW != NULL)
-            g->EW[i] = malloc(sizeof(long long) * g->_A[i]);
     }
 }
 
-void graph_append_endpoint(graph *g, int u, int v, long long w)
+void graph_append_endpoint(graph *g, int u, int v)
 {
     if (g->_A[u] == g->D[u])
     {
         g->_A[u] *= 2;
         g->V[u] = realloc(g->V[u], sizeof(int) * g->_A[u]);
-        if (g->EW != NULL)
-            g->EW[u] = realloc(g->EW[u], sizeof(long long) * g->_A[u]);
     }
 
     g->V[u][g->D[u]] = v;
-    if (g->EW != NULL)
-        g->EW[u][g->D[u]] = w;
 
     g->D[u]++;
 }
 
-graph *graph_init(int edge_weights)
+graph *graph_init()
 {
     graph *g = malloc(sizeof(graph));
-    *g = (graph){.n = 0, .m = 0, .nr = 0, ._a = 16};
+    *g = (graph){.n = 0, .m = 0, .nr = 0, ._a = 16, .t = 0, ._al = 16};
 
     g->V = malloc(sizeof(int *) * g->_a);
     g->D = malloc(sizeof(int) * g->_a);
     g->W = malloc(sizeof(long long) * g->_a);
-    g->EW = NULL;
-    if (edge_weights)
-        g->EW = malloc(sizeof(long long *) * g->_a);
 
     g->A = malloc(sizeof(int) * g->_a);
 
@@ -69,14 +66,14 @@ graph *graph_init(int edge_weights)
     {
         g->_A[i] = 16;
         g->V[i] = malloc(sizeof(int) * g->_A[i]);
-        if (g->EW != NULL)
-            g->EW[i] = malloc(sizeof(long long) * g->_A[i]);
     }
+
+    g->_Log_op = malloc(sizeof(char) * g->_al);
+    g->_Log = malloc(sizeof(log_action) * g->_al);
 
     return g;
 }
 
-// Assumes no edge weights
 void graph_construction_add_vertex(graph *g, long long w)
 {
     if (g->n == g->_a)
@@ -90,16 +87,14 @@ void graph_construction_add_vertex(graph *g, long long w)
     g->nr++;
 }
 
-// Assumes no edge weights
 void graph_construction_add_edge(graph *g, int u, int v)
 {
     assert(u < g->n && v < g->n);
 
-    graph_append_endpoint(g, u, v, 0);
-    graph_append_endpoint(g, v, u, 0);
+    graph_append_endpoint(g, u, v);
+    graph_append_endpoint(g, v, u);
 }
 
-// Assumes no edge weights
 void graph_construction_sort_edges(graph *g)
 {
     int m = 0;
@@ -154,6 +149,8 @@ graph *graph_parse(FILE *f)
     parse_id(Data, &p, &m);
     parse_id(Data, &p, &t);
 
+    skip_line(Data, &p);
+
     int vertex_weights = t >= 10,
         edge_weights = (t == 1 || t == 11);
 
@@ -170,6 +167,7 @@ graph *graph_parse(FILE *f)
         while (Data[p] == '%')
             skip_line(Data, &p);
 
+        g->W[u] = 1;
         if (vertex_weights)
         {
             parse_id(Data, &p, &w);
@@ -199,6 +197,7 @@ graph *graph_parse(FILE *f)
     munmap(Data, size);
 
     graph_construction_sort_edges(g);
+
     return g;
 }
 
@@ -215,8 +214,6 @@ graph *graph_copy(graph *g)
     gc->V = malloc(sizeof(int *) * gc->_a);
     gc->D = malloc(sizeof(int) * gc->_a);
     gc->W = malloc(sizeof(long long) * gc->_a);
-    if (g->EW != NULL)
-        gc->EW = malloc(sizeof(long long *) * gc->_a);
     gc->A = malloc(sizeof(int) * gc->_a);
     gc->_A = malloc(sizeof(int) * gc->_a);
 
@@ -227,8 +224,6 @@ graph *graph_copy(graph *g)
     {
         gc->_A[i] = g->_A[i];
         gc->V[i] = malloc(sizeof(int) * gc->_A[i]);
-        if (gc->EW != NULL)
-            gc->EW[i] = malloc(sizeof(long long) * gc->_A[i]);
     }
 
     for (int u = 0; u < g->n; u++)
@@ -243,10 +238,19 @@ graph *graph_copy(graph *g)
         for (int i = 0; i < g->D[u]; i++)
         {
             gc->V[u][i] = g->V[u][i];
-
-            if (gc->EW != NULL)
-                gc->EW[u][i] = g->EW[u][i];
         }
+    }
+
+    gc->t = g->t;
+    gc->_al = g->_al;
+
+    gc->_Log_op = malloc(sizeof(char) * gc->_al);
+    gc->_Log = malloc(sizeof(log_action) * gc->_al);
+
+    for (int i = 0; i < g->t; i++)
+    {
+        gc->_Log_op[i] = g->_Log_op[i];
+        gc->_Log[i] = g->_Log[i];
     }
 
     return gc;
@@ -257,93 +261,134 @@ void graph_free(graph *g)
     for (int i = 0; i < g->_a; i++)
     {
         free(g->V[i]);
-        if (g->EW != NULL)
-            free(g->EW[i]);
     }
     free(g->V);
     free(g->D);
     free(g->W);
-    free(g->EW);
     free(g->A);
     free(g->_A);
 
     free(g->Pl);
     free(g->Pr);
 
+    free(g->_Log_op);
+    free(g->_Log);
+
     free(g);
 }
 
 // Everything below this point assumes sorted neighborhoods
 
-void graph_enable_edge_weights(graph *g)
+void graph_log_action(graph *g, char op, log_action a)
 {
-    if (g->EW != NULL)
-        return;
-
-    g->EW = malloc(sizeof(long long *) * g->_a);
-    for (int i = 0; i < g->_a; i++)
+    if (g->_al == g->t)
     {
-        g->EW[i] = malloc(sizeof(long long) * g->_A[i]);
-        for (int j = 0; j < g->D[i]; j++)
-            g->EW[i][j] = 1;
+        g->_al *= 2;
+        g->_Log_op = realloc(g->_Log_op, sizeof(char) * g->_al);
+        g->_Log = realloc(g->_Log, sizeof(log_action) * g->_al);
     }
+
+    g->_Log_op[g->t] = op;
+    g->_Log[g->t] = a;
+    g->t++;
 }
 
-void graph_disable_edge_weights(graph *g)
-{
-    if (g->EW == NULL)
-        return;
-
-    for (int i = 0; i < g->_a; i++)
-    {
-        free(g->EW[i]);
-    }
-    free(g->EW);
-    g->EW = NULL;
-}
-
-void graph_add_vertex(graph *g, long long w, int Pl, int Pr)
+void graph_add_vertex(graph *g, long long w, int pl, int pr)
 {
     graph_construction_add_vertex(g, w);
-    g->Pl[g->n - 1] = Pl;
-    g->Pr[g->n - 1] = Pr;
+
+    int u = g->n - 1;
+
+    g->Pl[u] = pl;
+    g->Pr[u] = pr;
+
+    graph_log_action(g, ADD_VERTEX, (log_action){.V = {u, 0}, .w = 0});
 }
 
-int graph_insert_endpoint(graph *g, int u, int v, long long w)
+void graph_add_vertex_undo(graph *g, log_action a)
+{
+    g->n--;
+    g->nr--;
+}
+
+void graph_add_vertex_full(graph *g, long long w, int pl, int pr, int *N, int d)
+{
+    graph_construction_add_vertex(g, w);
+
+    int u = g->n - 1;
+
+    g->Pl[u] = pl;
+    g->Pr[u] = pr;
+
+    for (int i = 0; i < d; i++)
+    {
+        int v = N[i];
+        // Safe since u is the largest ID in the graph
+        graph_append_endpoint(g, u, v);
+        graph_append_endpoint(g, v, u);
+    }
+
+    g->m += d;
+
+    graph_log_action(g, ADD_VERTEX_FULL, (log_action){.V = {u, 0}, .w = 0});
+}
+
+void graph_add_vertex_full_undo(graph *g, log_action a)
+{
+    int u = g->n - 1;
+
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        int v = g->V[u][i];
+        // Safe since u is the largest ID in the graph
+        g->D[v]--;
+    }
+
+    g->n--;
+    g->nr--;
+
+    g->m -= g->D[u];
+}
+
+int graph_insert_endpoint(graph *g, int u, int v)
 {
     int p = lower_bound(g->V[u], g->D[u], v);
 
     if (p < g->D[u] && g->V[u][p] == v)
         return 0;
 
-    graph_append_endpoint(g, u, v, w);
-    for (int i = g->D[u] - 1; i > p; i--)
-    {
-        g->V[u][i] = g->V[u][i - 1];
-        if (g->EW != NULL)
-            g->EW[u][i] = g->EW[u][i - 1];
-    }
+    graph_append_endpoint(g, u, 0);
+
+    memmove(g->V[u] + p + 1, g->V[u] + p, sizeof(int) * (g->D[u] - p - 1));
+
     g->V[u][p] = v;
-    if (g->EW != NULL)
-        g->EW[u][p] = w;
 
     return 1;
 }
 
-void graph_add_edge(graph *g, int u, int v, long long w)
+void graph_add_edge(graph *g, int u, int v)
 {
     assert(g->A[u] && g->A[v]);
 
     if (u == v)
         return;
 
-    int e0 = graph_insert_endpoint(g, u, v, w);
-    int e1 = graph_insert_endpoint(g, v, u, w);
+    int e0 = graph_insert_endpoint(g, u, v);
+    int e1 = graph_insert_endpoint(g, v, u);
 
     assert(e0 == e1);
 
     if (e0 && e1)
+    {
         g->m++;
+        graph_log_action(g, ADD_EDGE, (log_action){.V = {u, v}, .w = 0});
+    }
+}
+
+void graph_add_edge_undo(graph *g, log_action a)
+{
+    graph_remove_edge(g, a.V[0], a.V[1]);
+    g->t--;
 }
 
 int graph_remove_endpoint(graph *g, int u, int v)
@@ -353,12 +398,8 @@ int graph_remove_endpoint(graph *g, int u, int v)
     if (p >= g->D[u] || g->V[u][p] != v)
         return 0;
 
-    for (int i = p + 1; i < g->D[u]; i++)
-    {
-        g->V[u][i - 1] = g->V[u][i];
-        if (g->EW != NULL)
-            g->EW[u][i - 1] = g->EW[u][i];
-    }
+    memmove(g->V[u] + p, g->V[u] + p + 1, sizeof(int) * (g->D[u] - p - 1));
+
     g->D[u]--;
 
     return 1;
@@ -374,7 +415,16 @@ void graph_remove_edge(graph *g, int u, int v)
     assert(e0 == e1);
 
     if (e0 && e1)
+    {
         g->m--;
+        graph_log_action(g, REMOVE_EDGE, (log_action){.V = {u, v}, .w = 0});
+    }
+}
+
+void graph_remove_edge_undo(graph *g, log_action a)
+{
+    graph_add_edge(g, a.V[0], a.V[1]);
+    g->t--;
 }
 
 void graph_deactivate_vertex(graph *g, int u)
@@ -390,25 +440,75 @@ void graph_deactivate_vertex(graph *g, int u)
     g->A[u] = 0;
     g->m -= g->D[u];
     g->nr--;
+
+    graph_log_action(g, REMOVE_VERTEX, (log_action){.V = {u, 0}, .w = 0});
+}
+
+void graph_deactivate_vertex_undo(graph *g, log_action a)
+{
+    int u = a.V[0];
+    assert(!g->A[u]);
+
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        int v = g->V[u][i];
+        int found = graph_insert_endpoint(g, v, u);
+        assert(found);
+    }
+
+    g->A[u] = 1;
+    g->m += g->D[u];
+    g->nr++;
 }
 
 void graph_change_vertex_weight(graph *g, int u, long long w)
 {
+    graph_log_action(g, CHANGE_WEIGHT, (log_action){.V = {u, 0}, .w = g->W[u]});
+
     g->W[u] = w;
 }
 
-void graph_increase_edge_weight(graph *g, int u, int v, long long w)
+void graph_change_vertex_weight_undo(graph *g, log_action a)
 {
-    int pu = lower_bound(g->V[u], g->D[u], v);
-    int uv = pu < g->D[u] && g->V[u][pu] == v;
+    int u = a.V[0];
+    int w = a.w;
 
-    int pv = lower_bound(g->V[v], g->D[v], u);
-    int vu = pv < g->D[v] && g->V[v][pv] == u;
+    g->W[u] = w;
+}
 
-    assert(uv == vu && g->EW != NULL);
+void graph_undo_changes(graph *g, int t)
+{
+    while (g->t > t)
+    {
+        g->t--;
+        log_action a = g->_Log[g->t];
+        char op = g->_Log_op[g->t];
 
-    g->EW[u][pu] += w;
-    g->EW[v][pv] += w;
+        switch (op)
+        {
+        case ADD_VERTEX:
+            graph_add_vertex_undo(g, a);
+            break;
+        case REMOVE_VERTEX:
+            graph_deactivate_vertex_undo(g, a);
+            break;
+        case ADD_EDGE:
+            graph_add_edge_undo(g, a);
+            break;
+        case REMOVE_EDGE:
+            graph_remove_edge_undo(g, a);
+            break;
+        case CHANGE_WEIGHT:
+            graph_change_vertex_weight_undo(g, a);
+            break;
+        case ADD_VERTEX_FULL:
+            graph_add_vertex_full_undo(g, a);
+            break;
+
+        default:
+            break;
+        }
+    }
 }
 
 int graph_is_neighbor(graph *g, int u, int v)

@@ -3,9 +3,9 @@ SHELL = /usr/bin/env bash
 CC ?= gcc
 override CFLAGS += -std=gnu17 -fopenmp -O3 -I include -g
 
-OBJ_SHARED = graph.o cliques.o
+OBJ_SHARED = graph.o
 
-OBJ_MWIS = main.o $(OBJ_SHARED)
+OBJ_MWIS = main.o reductions.o $(OBJ_SHARED)
 OBJ_MWIS := $(addprefix bin/, $(OBJ_MWIS))
 
 OBJ_VIS = main_vis.o screen.o barnes_hut.o $(OBJ_SHARED)
@@ -17,7 +17,7 @@ DEP := $(sort $(DEP))
 vpath %.c src
 vpath %.h include
 
-all : VIS
+all : MWIS
 
 -include $(DEP:.o=.d)
 

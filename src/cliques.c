@@ -246,20 +246,32 @@ int compare_vertices(const void *a, const void *b, void *c)
     return 0;
 }
 
+void cliques_sort(cliques *c, graph *g)
+{
+    merging_data md = {.V = c->V, .W = c->W};
+    for (int i = 0; i < c->n; i++)
+    {
+        qsort_r(c->C[i], c->S[i], sizeof(int), compare_vertices, &md);
+    }
+}
+
 int cliques_merge_prep(cliques *c, graph *g, int c1, int c2, int stop)
 {
     int n = 0, nr = 0, nd = 0, m = 0;
 
-    for (int i = 0; i < c->S[c1]; i++)
-        assert(g->A[c->C[c1][i]]);
-    for (int i = 0; i < c->S[c2]; i++)
-        assert(g->A[c->C[c2][i]]);
+    // for (int i = 0; i < c->S[c1]; i++)
+    //     assert(g->A[c->C[c1][i]]);
+    // for (int i = 0; i < c->S[c2]; i++)
+    //     assert(g->A[c->C[c2][i]]);
 
     c->mn = -1;
     c->mnr = -1;
     c->mnd = -1;
+    c->mmd = -1;
     c->c1 = -1;
     c->c2 = -1;
+
+    int m_ref = 0;
 
     // Copy elements in c1
     for (int i = 0; i < c->S[c1]; i++)
@@ -273,6 +285,7 @@ int cliques_merge_prep(cliques *c, graph *g, int c1, int c2, int stop)
         c->L[n] = u;
         c->W[n] = g->W[u];
         n++;
+        m_ref += g->D[u];
         for (int j = 0; j < g->D[u]; j++)
         {
             int v = g->V[u][j];
@@ -297,6 +310,7 @@ int cliques_merge_prep(cliques *c, graph *g, int c1, int c2, int stop)
         c->L[n] = u;
         c->W[n] = g->W[u];
         n++;
+        m_ref += g->D[u];
         for (int j = 0; j < g->D[u]; j++)
         {
             int v = g->V[u][j];
@@ -367,6 +381,8 @@ int cliques_merge_prep(cliques *c, graph *g, int c1, int c2, int stop)
     for (int i = 0; i < n; i++)
         c->O[i] = i;
 
+    int m_new = 0;
+
     merging_data md = {.V = c->V, .W = c->W};
     qsort_r(c->O, n, sizeof(int), compare_vertices, &md);
 
@@ -389,6 +405,7 @@ int cliques_merge_prep(cliques *c, graph *g, int c1, int c2, int stop)
         if (valid)
         {
             c->X[nr++] = u;
+            m_new += c->V[u + 1] - c->V[u];
         }
         else if (u < c->S[c1] + c->S[c2])
         {
@@ -399,6 +416,7 @@ int cliques_merge_prep(cliques *c, graph *g, int c1, int c2, int stop)
     c->mn = n;
     c->mnr = nr;
     c->mnd = nd;
+    c->mmd = m_new - m_ref;
     c->c1 = c1;
     c->c2 = c2;
 
