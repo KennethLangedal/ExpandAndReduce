@@ -2,14 +2,12 @@ SHELL = /usr/bin/env bash
 
 CC ?= gcc
 override CFLAGS += -std=gnu17 -fopenmp -O3 -I include -g
+override LDFLAGS += -L bin/
 
 OBJ_SHARED = graph.o
 
-OBJ_MWIS = main.o reductions.o $(OBJ_SHARED)
+OBJ_MWIS = main.o $(OBJ_SHARED)
 OBJ_MWIS := $(addprefix bin/, $(OBJ_MWIS))
-
-OBJ_VIS = main_vis.o screen.o barnes_hut.o $(OBJ_SHARED)
-OBJ_VIS := $(addprefix bin/, $(OBJ_VIS))
 
 DEP = $(OBJ_MWIS) $(OBJ_VIS)
 DEP := $(sort $(DEP))
@@ -24,12 +22,9 @@ all : MWIS
 MWIS : $(OBJ_MWIS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-VIS : $(OBJ_VIS)
-	$(CC) $(CFLAGS) -o $@ $^ `sdl2-config --cflags --libs` -lm
-
 bin/%.o : %.c
 	$(CC) $(CFLAGS) -MMD -c $< -o $@
 
 .PHONY : clean
 clean :
-	rm -f MWIS VIS $(DEP) $(DEP:.o=.d)
+	rm -f MWIS $(DEP) $(DEP:.o=.d)

@@ -1,18 +1,31 @@
 #pragma once
 
 #include <time.h>
+#include <stdlib.h>
 #include <limits.h>
 
-static inline double get_wtime()
+static inline void shuffle_list(int *list, int n)
 {
-    struct timespec tp;
-    clock_gettime(CLOCK_REALTIME, &tp);
-    return (double)tp.tv_sec + ((double)tp.tv_nsec / 1e9);
+    for (int i = 0; i < n - 1; i++)
+    {
+        int j = i + (rand() % (n - i));
+        int t = list[j];
+        list[j] = list[i];
+        list[i] = t;
+    }
 }
 
 static inline int compare_ids(const void *a, const void *b)
 {
     return (*(int *)a - *(int *)b);
+}
+
+static inline int compare_degrees(const void *a, const void *b, void *c)
+{
+    int u = *(const int *)a;
+    int v = *(const int *)b;
+    int *D = (int *)c;
+    return D[u] - D[v];
 }
 
 // Returns the position of the first element >= to x
@@ -27,6 +40,72 @@ static inline int lower_bound(const int *A, int n, int x)
     }
     s += (n == 1 && s[0] < x);
     return s - A;
+}
+
+// Compute the intersection between A and B
+static inline int set_intersection(const int *A, int a, const int *B, int b, int *C)
+{
+    int i = 0, j = 0, k = 0;
+    while (i < a && j < b)
+    {
+        if (A[i] < B[j])
+            i++;
+        else if (A[i] > B[j])
+            j++;
+        else
+        {
+            C[k] = A[i];
+            i++;
+            j++;
+            k++;
+        }
+    }
+    return k;
+}
+
+// Compute union between A and B
+static inline int set_union(const int *A, int a, const int *B, int b, int *C)
+{
+    int i = 0, j = 0, k = 0;
+
+    while (i < a && j < b)
+    {
+        if (A[i] < B[j])
+        {
+            C[k] = A[i];
+            k++;
+            i++;
+        }
+        else if (A[i] > B[j])
+        {
+            C[k] = B[j];
+            k++;
+            j++;
+        }
+        else
+        {
+            C[k] = A[i];
+            k++;
+            i++;
+            j++;
+        }
+    }
+
+    while (i < a)
+    {
+        C[k] = A[i];
+        k++;
+        i++;
+    }
+
+    while (j < b)
+    {
+        C[k] = B[j];
+        k++;
+        j++;
+    }
+
+    return k;
 }
 
 // Compute union between A and B with x and y included

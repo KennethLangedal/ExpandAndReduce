@@ -6,12 +6,10 @@
 #include <assert.h>
 #include <sys/mman.h>
 
-#define ADD_VERTEX 0
-#define REMOVE_VERTEX 1
-#define ADD_EDGE 2
-#define REMOVE_EDGE 3
-#define CHANGE_WEIGHT 4
-#define ADD_VERTEX_FULL 5
+#define EXPAND 0
+#define DEACTIVATE 1
+#define FOLD 2
+#define EDGE 3
 
 void graph_increase_size(graph *g)
 {
@@ -42,36 +40,7 @@ void graph_append_endpoint(graph *g, int u, int v)
     }
 
     g->V[u][g->D[u]] = v;
-
     g->D[u]++;
-}
-
-graph *graph_init()
-{
-    graph *g = malloc(sizeof(graph));
-    *g = (graph){.n = 0, .m = 0, .nr = 0, ._a = 16, .t = 0, ._al = 16};
-
-    g->V = malloc(sizeof(int *) * g->_a);
-    g->D = malloc(sizeof(int) * g->_a);
-    g->W = malloc(sizeof(long long) * g->_a);
-
-    g->A = malloc(sizeof(int) * g->_a);
-
-    g->_A = malloc(sizeof(int) * g->_a);
-
-    g->Pl = malloc(sizeof(int) * g->_a);
-    g->Pr = malloc(sizeof(int) * g->_a);
-
-    for (int i = 0; i < g->_a; i++)
-    {
-        g->_A[i] = 16;
-        g->V[i] = malloc(sizeof(int) * g->_A[i]);
-    }
-
-    g->_Log_op = malloc(sizeof(char) * g->_al);
-    g->_Log = malloc(sizeof(log_action) * g->_al);
-
-    return g;
 }
 
 void graph_construction_add_vertex(graph *g, long long w)
@@ -132,7 +101,28 @@ static inline void skip_line(char *Data, size_t *p)
 
 graph *graph_parse(FILE *f)
 {
-    graph *g = graph_init(0);
+    graph *g = malloc(sizeof(graph));
+    *g = (graph){.n = 0, .m = 0, .nr = 0, .off = 0, ._a = 16, .t = 0, .org_n = 0, ._al = 16};
+
+    g->V = malloc(sizeof(int *) * g->_a);
+    g->D = malloc(sizeof(int) * g->_a);
+    g->W = malloc(sizeof(long long) * g->_a);
+
+    g->A = malloc(sizeof(int) * g->_a);
+
+    g->_A = malloc(sizeof(int) * g->_a);
+
+    g->Pl = malloc(sizeof(int) * g->_a);
+    g->Pr = malloc(sizeof(int) * g->_a);
+
+    for (int i = 0; i < g->_a; i++)
+    {
+        g->_A[i] = 16;
+        g->V[i] = malloc(sizeof(int) * g->_A[i]);
+    }
+
+    g->_Log_op = malloc(sizeof(char) * g->_al);
+    g->_Log = malloc(sizeof(log_action) * g->_al);
 
     fseek(f, 0, SEEK_END);
     size_t size = ftell(f);
@@ -154,11 +144,18 @@ graph *graph_parse(FILE *f)
     int vertex_weights = t >= 10,
         edge_weights = (t == 1 || t == 11);
 
+    g->org_n = n;
+    g->Ref_count = malloc(sizeof(int) * n);
+
+    g->ref_zero_count = 0;
+    g->Ref_zero = malloc(sizeof(int) * n);
+
     for (int u = 0; u < n; u++)
     {
         graph_construction_add_vertex(g, 1);
         g->Pl[u] = u;
         g->Pr[u] = u;
+        g->Ref_count[u] = 1;
     }
 
     long long ei = 0;
@@ -208,6 +205,7 @@ graph *graph_copy(graph *g)
     gc->n = g->n;
     gc->m = g->m;
     gc->nr = g->nr;
+    gc->off = g->off;
 
     gc->_a = g->_a;
 
@@ -219,6 +217,18 @@ graph *graph_copy(graph *g)
 
     gc->Pl = malloc(sizeof(int) * gc->_a);
     gc->Pr = malloc(sizeof(int) * gc->_a);
+
+    gc->org_n = g->org_n;
+    gc->Ref_count = malloc(sizeof(int) * gc->org_n);
+
+    gc->ref_zero_count = g->ref_zero_count;
+    gc->Ref_zero = malloc(sizeof(int) * gc->org_n);
+
+    for (int i = 0; i < gc->org_n; i++)
+        gc->Ref_count[i] = g->Ref_count[i];
+
+    for (int i = 0; i < gc->ref_zero_count; i++)
+        gc->Ref_zero[i] = g->Ref_zero[i];
 
     for (int i = 0; i < gc->_a; i++)
     {
@@ -236,9 +246,7 @@ graph *graph_copy(graph *g)
         gc->Pr[u] = g->Pr[u];
 
         for (int i = 0; i < g->D[u]; i++)
-        {
             gc->V[u][i] = g->V[u][i];
-        }
     }
 
     gc->t = g->t;
@@ -259,9 +267,8 @@ graph *graph_copy(graph *g)
 void graph_free(graph *g)
 {
     for (int i = 0; i < g->_a; i++)
-    {
         free(g->V[i]);
-    }
+
     free(g->V);
     free(g->D);
     free(g->W);
@@ -270,6 +277,10 @@ void graph_free(graph *g)
 
     free(g->Pl);
     free(g->Pr);
+
+    free(g->Ref_count);
+
+    free(g->Ref_zero);
 
     free(g->_Log_op);
     free(g->_Log);
@@ -293,61 +304,37 @@ void graph_log_action(graph *g, char op, log_action a)
     g->t++;
 }
 
-void graph_add_vertex(graph *g, long long w, int pl, int pr)
+void increase_ref_count(graph *g, int u)
 {
-    graph_construction_add_vertex(g, w);
-
-    int u = g->n - 1;
-
-    g->Pl[u] = pl;
-    g->Pr[u] = pr;
-
-    graph_log_action(g, ADD_VERTEX, (log_action){.V = {u, 0}, .w = 0});
-}
-
-void graph_add_vertex_undo(graph *g, log_action a)
-{
-    g->n--;
-    g->nr--;
-}
-
-void graph_add_vertex_full(graph *g, long long w, int pl, int pr, int *N, int d)
-{
-    graph_construction_add_vertex(g, w);
-
-    int u = g->n - 1;
-
-    g->Pl[u] = pl;
-    g->Pr[u] = pr;
-
-    for (int i = 0; i < d; i++)
+    if (u < g->org_n)
     {
-        int v = N[i];
-        // Safe since u is the largest ID in the graph
-        graph_append_endpoint(g, u, v);
-        graph_append_endpoint(g, v, u);
+        if (g->Ref_count[u] == 0)
+        {
+            assert(g->Ref_zero[g->ref_zero_count - 1] == u);
+            g->ref_zero_count--;
+        }
+        g->Ref_count[u]++;
     }
-
-    g->m += d;
-
-    graph_log_action(g, ADD_VERTEX_FULL, (log_action){.V = {u, 0}, .w = 0});
+    else
+    {
+        increase_ref_count(g, g->Pr[u]);
+        increase_ref_count(g, g->Pl[u]);
+    }
 }
 
-void graph_add_vertex_full_undo(graph *g, log_action a)
+void decrease_ref_count(graph *g, int u)
 {
-    int u = g->n - 1;
-
-    for (int i = 0; i < g->D[u]; i++)
+    if (u < g->org_n)
     {
-        int v = g->V[u][i];
-        // Safe since u is the largest ID in the graph
-        g->D[v]--;
+        if (g->Ref_count[u] == 1)
+            g->Ref_zero[g->ref_zero_count++] = u;
+        g->Ref_count[u]--;
     }
-
-    g->n--;
-    g->nr--;
-
-    g->m -= g->D[u];
+    else
+    {
+        decrease_ref_count(g, g->Pl[u]);
+        decrease_ref_count(g, g->Pr[u]);
+    }
 }
 
 int graph_insert_endpoint(graph *g, int u, int v)
@@ -366,31 +353,6 @@ int graph_insert_endpoint(graph *g, int u, int v)
     return 1;
 }
 
-void graph_add_edge(graph *g, int u, int v)
-{
-    assert(g->A[u] && g->A[v]);
-
-    if (u == v)
-        return;
-
-    int e0 = graph_insert_endpoint(g, u, v);
-    int e1 = graph_insert_endpoint(g, v, u);
-
-    assert(e0 == e1);
-
-    if (e0 && e1)
-    {
-        g->m++;
-        graph_log_action(g, ADD_EDGE, (log_action){.V = {u, v}, .w = 0});
-    }
-}
-
-void graph_add_edge_undo(graph *g, log_action a)
-{
-    graph_remove_edge(g, a.V[0], a.V[1]);
-    g->t--;
-}
-
 int graph_remove_endpoint(graph *g, int u, int v)
 {
     int p = lower_bound(g->V[u], g->D[u], v);
@@ -405,31 +367,139 @@ int graph_remove_endpoint(graph *g, int u, int v)
     return 1;
 }
 
-void graph_remove_edge(graph *g, int u, int v)
+void graph_add_edge(graph *g, int u, int v)
 {
-    assert(g->A[u] && g->A[v]);
+    assert(g->A[u] && g->A[v] && !graph_is_neighbor(g, u, v));
 
-    int e0 = graph_remove_endpoint(g, u, v);
-    int e1 = graph_remove_endpoint(g, v, u);
+    int uv = graph_insert_endpoint(g, u, v);
+    int vu = graph_insert_endpoint(g, v, u);
+    assert(uv && vu);
 
-    assert(e0 == e1);
+    g->m += 1;
 
-    if (e0 && e1)
-    {
-        g->m--;
-        graph_log_action(g, REMOVE_EDGE, (log_action){.V = {u, v}, .w = 0});
-    }
+    graph_log_action(g, EDGE, (log_action){.u = u, .v = v});
 }
 
-void graph_remove_edge_undo(graph *g, log_action a)
+void graph_add_edge_undo(graph *g, log_action a)
 {
-    graph_add_edge(g, a.V[0], a.V[1]);
-    g->t--;
+    int u = a.u, v = a.v;
+
+    assert(g->A[u] && g->A[v] && graph_is_neighbor(g, u, v));
+
+    int uv = graph_remove_endpoint(g, u, v);
+    int vu = graph_remove_endpoint(g, v, u);
+    assert(uv && vu);
+
+    g->m -= 1;
+}
+
+void graph_edge_expansion(graph *g, int u, int v)
+{
+    assert(g->A[u] && g->A[v] && !graph_is_neighbor(g, u, v));
+
+    // Constructing the new vertex
+
+    graph_construction_add_vertex(g, g->W[u] + g->W[v]);
+
+    int w = g->n - 1;
+
+    g->Pl[w] = u;
+    g->Pr[w] = v;
+
+    increase_ref_count(g, w);
+
+    while (g->_A[w] < g->D[u] + g->D[v] + 2)
+        g->_A[w] *= 2;
+
+    g->V[w] = realloc(g->V[w], sizeof(int) * g->_A[w]);
+
+    g->D[w] = set_union_pluss_two(g->V[u], g->D[u], g->V[v], g->D[v], u, v, g->V[w]);
+
+    for (int i = 0; i < g->D[w]; i++)
+    {
+        int x = g->V[w][i];
+        graph_append_endpoint(g, x, w);
+    }
+
+    // Insert edge between u and v
+
+    int uv = graph_insert_endpoint(g, u, v);
+    int vu = graph_insert_endpoint(g, v, u);
+    assert(uv && vu);
+
+    g->m += g->D[w] + 1;
+
+    graph_log_action(g, EXPAND, (log_action){.u = u, .v = v});
+}
+
+void graph_edge_expansion_undo(graph *g, log_action a)
+{
+    int u = a.u, v = a.v;
+    int w = g->n - 1;
+
+    decrease_ref_count(g, w);
+
+    assert(g->A[u] && g->A[v] && g->A[w]);
+
+    // Undo the new vertex
+
+    for (int i = 0; i < g->D[w]; i++)
+    {
+        int x = g->V[w][i];
+        g->D[x]--;
+    }
+
+    g->n--;
+    g->nr--;
+
+    // Remove the edge between u and v
+
+    int uv = graph_remove_endpoint(g, u, v);
+    int vu = graph_remove_endpoint(g, v, u);
+    assert(uv && vu);
+
+    g->m -= g->D[w] + 1;
+}
+
+void graph_clique_fold(graph *g, int u)
+{
+    assert(g->A[u]);
+
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        int v = g->V[u][i];
+        assert(g->W[v] > g->W[u]);
+        g->W[v] -= g->W[u];
+    }
+
+    g->off += g->W[u];
+    graph_log_action(g, FOLD, (log_action){.u = u, .v = 0});
+
+    increase_ref_count(g, u); // To not count u as removed yet
+    graph_deactivate_vertex(g, u);
+}
+
+void graph_clique_fold_undo(graph *g, log_action a)
+{
+    int u = a.u;
+    assert(g->A[u]);
+
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        int v = g->V[u][i];
+        g->W[v] += g->W[u];
+        assert(g->W[v] > g->W[u]);
+    }
+
+    g->off -= g->W[u];
+    decrease_ref_count(g, u);
 }
 
 void graph_deactivate_vertex(graph *g, int u)
 {
     assert(g->A[u]);
+
+    decrease_ref_count(g, u);
 
     for (int i = 0; i < g->D[u]; i++)
     {
@@ -441,13 +511,15 @@ void graph_deactivate_vertex(graph *g, int u)
     g->m -= g->D[u];
     g->nr--;
 
-    graph_log_action(g, REMOVE_VERTEX, (log_action){.V = {u, 0}, .w = 0});
+    graph_log_action(g, DEACTIVATE, (log_action){.u = u, .v = 0});
 }
 
 void graph_deactivate_vertex_undo(graph *g, log_action a)
 {
-    int u = a.V[0];
+    int u = a.u;
     assert(!g->A[u]);
+
+    increase_ref_count(g, u);
 
     for (int i = 0; i < g->D[u]; i++)
     {
@@ -461,21 +533,6 @@ void graph_deactivate_vertex_undo(graph *g, log_action a)
     g->nr++;
 }
 
-void graph_change_vertex_weight(graph *g, int u, long long w)
-{
-    graph_log_action(g, CHANGE_WEIGHT, (log_action){.V = {u, 0}, .w = g->W[u]});
-
-    g->W[u] = w;
-}
-
-void graph_change_vertex_weight_undo(graph *g, log_action a)
-{
-    int u = a.V[0];
-    int w = a.w;
-
-    g->W[u] = w;
-}
-
 void graph_undo_changes(graph *g, int t)
 {
     while (g->t > t)
@@ -486,23 +543,17 @@ void graph_undo_changes(graph *g, int t)
 
         switch (op)
         {
-        case ADD_VERTEX:
-            graph_add_vertex_undo(g, a);
+        case EXPAND:
+            graph_edge_expansion_undo(g, a);
             break;
-        case REMOVE_VERTEX:
+        case DEACTIVATE:
             graph_deactivate_vertex_undo(g, a);
             break;
-        case ADD_EDGE:
+        case FOLD:
+            graph_clique_fold_undo(g, a);
+            break;
+        case EDGE:
             graph_add_edge_undo(g, a);
-            break;
-        case REMOVE_EDGE:
-            graph_remove_edge_undo(g, a);
-            break;
-        case CHANGE_WEIGHT:
-            graph_change_vertex_weight_undo(g, a);
-            break;
-        case ADD_VERTEX_FULL:
-            graph_add_vertex_full_undo(g, a);
             break;
 
         default:
@@ -524,4 +575,55 @@ int graph_is_neighbor(graph *g, int u, int v)
     assert(uv == vu);
 
     return uv;
+}
+
+int graph_reduce(graph *g, int u, int fold)
+{
+    if (!g->A[u])
+        return 0;
+
+    int reduced = 0;
+    int foldable = fold;
+
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        int v = g->V[u][i];
+
+        if (g->W[u] < g->W[v])
+        {
+            // u is dominated by v (v is heavier and N(v) is a subset of N(u))
+            if (set_is_subset_except_one(g->V[v], g->D[v], g->V[u], g->D[u], u))
+            {
+                graph_deactivate_vertex(g, u);
+                return 1;
+            }
+            // if v is dominated by u, but the weights are the wrong way around, we could fold u (only if it applies for all)
+            else if (foldable && !set_is_subset_except_one(g->V[u], g->D[u], g->V[v], g->D[v], v))
+            {
+                foldable = 0;
+            }
+        }
+        else
+        {
+            // u is dominating v (u is heavier and N(u) is a subset of N(v))
+            if (set_is_subset_except_one(g->V[u], g->D[u], g->V[v], g->D[v], v))
+            {
+                graph_deactivate_vertex(g, v);
+                reduced++;
+                i--;
+            }
+            else
+            {
+                foldable = 0;
+            }
+        }
+    }
+
+    if (foldable)
+    {
+        graph_clique_fold(g, u);
+        return 1;
+    }
+
+    return reduced > 0;
 }
