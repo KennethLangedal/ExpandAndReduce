@@ -1,2 +1,3 @@
-# Clique_MWIS
+# Expand And Reduce
+
 MWIS solver based on clique contractions.
