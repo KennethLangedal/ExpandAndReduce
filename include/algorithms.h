@@ -4,6 +4,15 @@
 #include <stdlib.h>
 #include <limits.h>
 
+static inline double get_wall_time()
+{
+    struct timespec ts;
+    // CLOCK_MONOTONIC is preferred for intervals as it is unaffected by
+    // system time jumps (like NTP updates or leap seconds).
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
 static inline void shuffle_list(int *list, int n)
 {
     for (int i = 0; i < n - 1; i++)

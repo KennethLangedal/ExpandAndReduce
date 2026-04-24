@@ -1,7 +1,12 @@
 bin/*
 !bin/.gitignore
 
-MWIS
-VIS
+ENR
+
+instances.txt
+run.sh
 
 .vscode/*
+
+kernels/*
+metas/*

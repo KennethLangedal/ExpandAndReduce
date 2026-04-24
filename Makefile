@@ -1,7 +1,7 @@
 SHELL = /usr/bin/env bash
 
 CC ?= gcc
-override CFLAGS += -std=gnu17 -fopenmp -O3 -I include -g
+override CFLAGS += -std=gnu17 -O3 -I include -g
 override LDFLAGS += -L bin/
 
 OBJ_SHARED = graph.o
@@ -15,11 +15,11 @@ DEP := $(sort $(DEP))
 vpath %.c src
 vpath %.h include
 
-all : MWIS
+all : ENR
 
 -include $(DEP:.o=.d)
 
-MWIS : $(OBJ_MWIS)
+ENR : $(OBJ_MWIS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 bin/%.o : %.c
@@ -27,4 +27,4 @@ bin/%.o : %.c
 
 .PHONY : clean
 clean :
-	rm -f MWIS $(DEP) $(DEP:.o=.d)
+	rm -f ENR $(DEP) $(DEP:.o=.d)

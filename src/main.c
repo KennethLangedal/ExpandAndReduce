@@ -17,6 +17,8 @@
 
 volatile sig_atomic_t tle = 0;
 int folding = 1;
+int _ba = 0;
+int *B = NULL;
 
 void sig_handler(int signum)
 {
@@ -163,24 +165,30 @@ static inline int expand_and_reduce(graph *g, int u, int *X, int *Y, int *T, int
 }
 
 // Loop over the graph while trying to reduce
-static inline void reduce_loop(graph *g, int n, int *O, int *X, int *Y, int *T, int sort, int max, int slack, int force)
+static inline void reduce_loop(graph *g, int n, int *X, int *Y, int *T, int sort, int max, int slack, int force)
 {
     int count = 0, imp = 1;
     while (imp && count++ < n && !tle)
     {
+        if (g->nr > _ba)
+        {
+            _ba *= 2;
+            B = realloc(B, sizeof(int) * _ba);
+        }
+
         int m = 0;
         for (int u = 0; u < g->n; u++)
             if (g->A[u])
-                O[m++] = u;
+                B[m++] = u;
 
         if (sort)
-            qsort_r(O, m, sizeof(int), compare_degrees, g->D);
+            qsort_r(B, m, sizeof(int), compare_degrees, g->D);
         else
-            shuffle_list(O, m);
+            shuffle_list(B, m);
 
         imp = 0;
-        for (int i = 0; i < m; i++)
-            imp |= expand_and_reduce(g, O[i], X, Y, T, max, slack, force);
+        for (int i = 0; i < m && !tle; i++)
+            imp |= expand_and_reduce(g, B[i], X, Y, T, max, slack, force);
     }
 }
 
@@ -206,7 +214,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    struct sigaction sa;
+    struct sigaction sa = {};
     sa.sa_handler = sig_handler;
     sigaction(SIGINT, &sa, NULL);
 
@@ -218,44 +226,50 @@ int main(int argc, char **argv)
 
     printf("%s,%d,%d,", argv[1], g->n, g->m);
 
-    int *T = malloc(sizeof(int) * g->m * 2);
-    int *X = malloc(sizeof(int) * g->m * 2);
-    int *Y = malloc(sizeof(int) * g->m * 2);
+    int *T = malloc(sizeof(int) * g->m);
+    int *X = malloc(sizeof(int) * g->m);
+    int *Y = malloc(sizeof(int) * g->m);
 
     int *I = malloc(sizeof(int) * g->org_n);
     for (int i = 0; i < g->org_n; i++)
         I[i] = 0;
 
-    int *O = malloc(sizeof(int) * g->n * 8);
+    _ba = g->n;
+    B = malloc(sizeof(int) * _ba);
+
+    double t0 = get_wall_time();
 
     for (int it = 0; it < MAX_ITERATIONS && !tle && g->nr > 0; it++)
     {
         int t = g->t;
         int ref_zero = g->ref_zero_count;
 
-        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, O, X, Y, T, (it % 2) == 0, STARTING_CEILING + it * INCREMENT_CEILING, 0, 0);
+        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, X, Y, T, (it % 2) == 0, STARTING_CEILING + it * INCREMENT_CEILING, 0, 0);
         if (verbose)
             printf("%d %d %lld\n", g->nr, g->m, g->off);
 
-        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, O, X, Y, T, (it % 2) == 0, STARTING_CEILING + it * INCREMENT_CEILING, 1, 0);
+        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, X, Y, T, (it % 2) == 0, STARTING_CEILING + it * INCREMENT_CEILING, 1, 0);
         if (verbose)
             printf("%d %d %lld\n", g->nr, g->m, g->off);
 
         if (g->nr < FORCE_LIMIT)
-            reduce_loop(g, MAX_IMPROVEMENT_LOOPS, O, X, Y, T, it, STARTING_CEILING + it * FORCE_FACTOR, 1, 1);
+            reduce_loop(g, MAX_IMPROVEMENT_LOOPS, X, Y, T, it, STARTING_CEILING + it * FORCE_FACTOR, 1, 1);
 
         restart(g, t, ref_zero, T, I);
     }
 
     folding = 0;
+    tle = 0;
 
     if (g->nr > 0)
     {
-        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, O, X, Y, T, 1, STARTING_CEILING + 32 * INCREMENT_CEILING, 0, 0);
-        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, O, X, Y, T, 1, STARTING_CEILING + 32 * INCREMENT_CEILING, 1, 0);
+        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, X, Y, T, 1, 32, 0, 0);
+        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, X, Y, T, 1, 32, 1, 0);
     }
 
-    printf("%d,%d,%lld\n", g->nr, g->m, g->off);
+    double t1 = get_wall_time();
+
+    printf("%d,%d,%lld,%lf\n", g->nr, g->m, g->off, t1 - t0);
 
     // Store reduced graph
     int *RM = malloc(sizeof(int) * g->n);
@@ -291,31 +305,32 @@ int main(int argc, char **argv)
 
     // Storing the meta information
     f = fopen(argv[3], "w");
-    // for (int u = 0; u < g->org_n; u++)
-    // {
-    //     if (I[u] <= 0)
-    //         continue;
-    //     fprintf(f, "%d\n", u + 1);
-    // }
-    fprintf(f, "%d %d %d\n", inc, exc, g->nr);
+    fprintf(f, "%% Reduced Graph Metadata\n");
+    fprintf(f, "included: %d\nexcluded: %d\nremaining: %d\n\n", inc, exc, g->nr);
+    fprintf(f, "%% Vertices included in the independent set\n");
+    fprintf(f, "included_vertices: ");
     for (int u = 0; u < g->org_n; u++)
     {
         if (I[u] <= 0)
             continue;
         fprintf(f, "%d ", u + 1);
     }
-    fprintf(f, "\n");
+    fprintf(f, "\n\n");
+    fprintf(f, "%% Vertices excluded from the independent set\n");
+    fprintf(f, "excluded_vertices: ");
     for (int u = 0; u < g->org_n; u++)
     {
         if (I[u] >= 0)
             continue;
         fprintf(f, "%d ", u + 1);
     }
-    fprintf(f, "\n");
+    fprintf(f, "\n\n");
+    fprintf(f, "%% Reverse mapping (reduced vertex ID: original set)\n");
     for (int u = 0; u < g->n; u++)
     {
         if (!g->A[u])
             continue;
+        fprintf(f, "map %d: ", RM[u] + 1);
         recursive_print(f, g, u);
         fprintf(f, "\n");
     }
@@ -325,7 +340,8 @@ int main(int argc, char **argv)
     free(X);
     free(Y);
     free(I);
-    free(O);
+    free(B);
+    free(RM);
 
     graph_free(g);
 
