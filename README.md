@@ -75,5 +75,12 @@ excluded_vertices: 3
 
 ```
 
+In addition to these two files, the program also outputs a single CSV line to the STDOUT on the following format.
+
+```
+instance,n,m,nk,mk,offset,tred
+```
+The results.csv file contains this output from our experimental evaluation.
+
 ## License
 This project is licensed under the [MIT License](LICENSE).
