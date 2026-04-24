@@ -80,7 +80,7 @@ In addition to these two files, the program also outputs a single CSV line to th
 ```
 instance,n,m,nk,mk,offset,tred
 ```
-The results.csv file contains this output from our experimental evaluation.
+The [results.csv](results.csv) file contains this output from our experimental evaluation.
 
 ## License
 This project is licensed under the [MIT License](LICENSE).
