@@ -38,8 +38,6 @@ Notice that vertices are 1-indexed, and edges appear in the neighborhoods of bot
 
 ### Running the Program
 
-Provide the exact command to run your code with the included example:
-
 ```bash
 ./ENR [input graph] [reduced graph] [meta file]
 ```
