@@ -10,3 +10,10 @@ run.sh
 
 kernels/*
 metas/*
+
+# Data and large files
+data/full/
+data/*.tar.gz
+*.tar.gz
+output/
+results_reproduced.csv
