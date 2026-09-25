@@ -21,6 +21,8 @@ make
 OUTPUT_DIR="output/test"
 mkdir -p "${OUTPUT_DIR}/reduced" "${OUTPUT_DIR}/meta"
 
+TIMEOUT="${TIMEOUT:-1h}"
+
 echo ""
 echo "==> Running ENR on tiny instances in data/tiny/..."
 echo "------------------------------------------------------------"
@@ -33,7 +35,7 @@ for graph_file in data/tiny/*.graph; do
         exit 1
     fi
     base_name="$(basename "${graph_file}")"
-    ./ENR "${graph_file}" "${OUTPUT_DIR}/reduced/${base_name}" "${OUTPUT_DIR}/meta/${base_name}.meta"
+    timeout --preserve-status -k 99d -s SIGINT "${TIMEOUT}" ./ENR "${graph_file}" "${OUTPUT_DIR}/reduced/${base_name}" "${OUTPUT_DIR}/meta/${base_name}.meta"
 done
 
 echo "------------------------------------------------------------"

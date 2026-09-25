@@ -41,7 +41,7 @@ To reproduce the experimental evaluation across all 32 benchmark graphs:
 # or: bash scripts/run_full.sh
 ```
 * **Dataset**: If the full dataset is not present in `data/full/`, the script will automatically invoke `scripts/download_instances.sh` to fetch and unpack the 32 benchmark instances from Zenodo.
-* **Estimated Runtime**: Processing all 32 instances sequentially takes several hours depending on hardware (several large SNAP/OSM instances run for ~1 hour each).
+* **Estimated Runtime**: Processing all 32 instances sequentially takes several hours depending on hardware. In accordance with the experimental setup in the paper, each instance is invoked with a 1-hour time limit (`timeout --preserve-status -k 99d -s SIGINT 1h`). When `SIGINT` is received, ENR finishes its current iteration, performs the final reduction pass, outputs results, and exits cleanly.
 * **Output**: Generated results are saved to `results_reproduced.csv` and can be compared directly against [`results.csv`](results.csv). Reduced graphs and metadata files are saved to `output/full/reduced/` and `output/full/meta/`.
 
 ### Manual Dataset Download
@@ -79,6 +79,11 @@ make
 
 ```bash
 ./ENR [input graph] [reduced graph] [meta file]
+```
+
+To run with the experimental 1-hour time limit (sending `SIGINT` so ENR gracefully completes its reduction loop and outputs results):
+```bash
+timeout --preserve-status -k 99d -s SIGINT 1h ./ENR [input graph] [reduced graph] [meta file]
 ```
 
 ### Input Format

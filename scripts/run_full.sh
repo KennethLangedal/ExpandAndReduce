@@ -31,8 +31,10 @@ mkdir -p "${OUTPUT_DIR}/reduced" "${OUTPUT_DIR}/meta"
 
 echo "instance,n,m,nk,mk,offset,tred" > "${OUTPUT_CSV}"
 
+TIMEOUT="${TIMEOUT:-1h}"
+
 echo ""
-echo "==> Running Expand & Reduce on all 32 benchmark instances..."
+echo "==> Running Expand & Reduce on all 32 benchmark instances (timeout: ${TIMEOUT})..."
 echo "==> Results will be saved to ${OUTPUT_CSV}"
 echo "Note: Full evaluation may take several hours depending on hardware."
 echo "------------------------------------------------------------"
@@ -46,8 +48,8 @@ tail -n +2 results.csv | cut -d',' -f1 | while IFS= read -r inst_name; do
     fi
     echo "[$(date '+%H:%M:%S')] Processing: ${inst_name}"
     
-    # Run ENR and capture output to CSV and stdout
-    res=$(./ENR "${inst_path}" "${OUTPUT_DIR}/reduced/${inst_name}" "${OUTPUT_DIR}/meta/${inst_name}.meta")
+    # Run ENR with timeout sending SIGINT (allows graceful completion and final reduction pass)
+    res=$(timeout --preserve-status -k 99d -s SIGINT "${TIMEOUT}" ./ENR "${inst_path}" "${OUTPUT_DIR}/reduced/${inst_name}" "${OUTPUT_DIR}/meta/${inst_name}.meta")
     echo "${res}"
     echo "${res}" >> "${OUTPUT_CSV}"
 done
