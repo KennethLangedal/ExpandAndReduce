@@ -1,10 +1,12 @@
 SHELL = /usr/bin/env bash
 
 CC ?= gcc
-override CFLAGS += -std=gnu17 -O3 -I include -g
-override LDFLAGS += -L bin/
+HIGHS_DIR ?= ../HiGHS
 
-OBJ_SHARED = graph.o
+override CFLAGS += -g -std=gnu17 -O3 -I include -I $(HIGHS_DIR)/highs -I $(HIGHS_DIR)/build -g
+override LDFLAGS += -L bin/ -L $(HIGHS_DIR)/build/lib -Wl,-rpath,$(HIGHS_DIR)/build/lib -lhighs
+
+OBJ_SHARED = graph.o densify.o
 
 OBJ_MWIS = main.o $(OBJ_SHARED)
 OBJ_MWIS := $(addprefix bin/, $(OBJ_MWIS))

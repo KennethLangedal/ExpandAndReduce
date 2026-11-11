@@ -2,6 +2,7 @@
 
 #include "graph.h"
 #include "algorithms.h"
+#include "densify.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -20,15 +21,52 @@ int folding = 1;
 int _ba = 0;
 int *B = NULL;
 
+static int _cap_txy = 0;
+static int *T = NULL;
+static int *X = NULL;
+static int *Y = NULL;
+
+static densify_context *dctx = NULL;
+static densify_options dopt;
+
+static inline void ensure_txy(int needed)
+{
+    if (needed <= _cap_txy)
+        return;
+    if (_cap_txy == 0)
+        _cap_txy = 100000;
+    while (_cap_txy < needed)
+        _cap_txy *= 2;
+    T = realloc(T, sizeof(int) * _cap_txy);
+    X = realloc(X, sizeof(int) * _cap_txy);
+    Y = realloc(Y, sizeof(int) * _cap_txy);
+}
+
 void sig_handler(int signum)
 {
     if (signum == SIGINT)
         tle = 1;
 }
 
+static inline void mark_included(graph *g, int u, int *I)
+{
+    if (u < g->org_n)
+    {
+        I[u] = 1;
+    }
+    else
+    {
+        mark_included(g, g->Pl[u], I);
+        mark_included(g, g->Pr[u], I);
+    }
+}
+
 // Restore graph g to time t, but remember any vertices that had reference count zero (removable).
 static inline void restart(graph *g, int t, int ref_zero, int *T, int *I)
 {
+    int needed = g->ref_zero_count - ref_zero + 16;
+    ensure_txy(needed);
+
     int n = 0;
     for (int i = ref_zero; i < g->ref_zero_count; i++)
         T[n++] = g->Ref_zero[i];
@@ -39,7 +77,8 @@ static inline void restart(graph *g, int t, int ref_zero, int *T, int *I)
     {
         int u = T[i];
         I[u] = -1;
-        graph_deactivate_vertex(g, u);
+        if (g->A[u])
+            graph_deactivate_vertex(g, u);
     }
 
     for (int u = 0; u < g->n; u++)
@@ -47,7 +86,7 @@ static inline void restart(graph *g, int t, int ref_zero, int *T, int *I)
         if (!g->A[u] || g->D[u] > 0)
             continue;
 
-        I[u] = 1;
+        mark_included(g, u, I);
         graph_reduce(g, u, 1);
     }
 }
@@ -170,6 +209,8 @@ static inline void reduce_loop(graph *g, int n, int *X, int *Y, int *T, int sort
     int count = 0, imp = 1;
     while (imp && count++ < n && !tle)
     {
+        ensure_txy(g->n + max + 10000);
+
         if (g->nr > _ba)
         {
             _ba *= 2;
@@ -214,21 +255,21 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    struct sigaction sa = {};
-    sa.sa_handler = sig_handler;
-    sigaction(SIGINT, &sa, NULL);
+    // struct sigaction sa = {};
+    // sa.sa_handler = sig_handler;
+    // sigaction(SIGINT, &sa, NULL);
 
     FILE *f = fopen(argv[1], "r");
     graph *g = graph_parse(f);
     fclose(f);
 
-    int verbose = 0;
+    int verbose = 1;
 
-    printf("%s,%d,%d,", argv[1], g->n, g->m);
+    printf("%s,%d,%d\n", argv[1], g->n, g->m);
 
-    int *T = malloc(sizeof(int) * g->m);
-    int *X = malloc(sizeof(int) * g->m);
-    int *Y = malloc(sizeof(int) * g->m);
+    double t0 = get_wall_time();
+
+    ensure_txy(g->m + g->n + 100000);
 
     int *I = malloc(sizeof(int) * g->org_n);
     for (int i = 0; i < g->org_n; i++)
@@ -237,10 +278,84 @@ int main(int argc, char **argv)
     _ba = g->n;
     B = malloc(sizeof(int) * _ba);
 
-    double t0 = get_wall_time();
+    dopt = densify_default_options();
+    dopt.verbose = 0;
+    dopt.max_degree = 0; // No degree limits as requested
+    char *env_edges = getenv("DENSIFY_MAX_EDGES");
+    if (env_edges)
+        dopt.max_edges_to_add = atoi(env_edges);
+    else
+        dopt.max_edges_to_add = 8;
 
+    char *env_dist = getenv("DENSIFY_MAX_DIST");
+    if (env_dist)
+        dopt.max_distance = atoi(env_dist);
+
+    dctx = densify_context_create(g->n);
+
+    // Step 1: Alternating densify-expand and reduction process in a loop with restart
+    int max_densify_rounds = 32;
+    char *env_rounds = getenv("DENSIFY_MAX_ROUNDS");
+    if (env_rounds)
+        max_densify_rounds = atoi(env_rounds);
+
+    printf("============================================================\n");
+    printf("Starting Densification Outer Loop (with Restart)\n");
+    printf("Initial graph: vertices=%d, edges=%d, offset=%lld\n", g->nr, g->m, g->off);
+    printf("Max edges per vertex: %d, max distance: %d, max outer rounds: %d\n",
+           dopt.max_edges_to_add, dopt.max_distance, max_densify_rounds);
+    printf("============================================================\n");
+    fflush(stdout);
+
+    for (int dit = 0; dit < max_densify_rounds && !tle && g->nr > 0; dit++)
+    {
+        int t = g->t;
+        int ref_zero = g->ref_zero_count;
+        int nr_before = g->nr;
+        long long off_before = g->off;
+        double t_dit_start = get_wall_time();
+
+        printf("\n>>> [Densify Round %d] Start: vertices=%d, edges=%d, offset=%lld\n",
+               dit + 1, g->nr, g->m, g->off);
+        fflush(stdout);
+
+        // Run this process: alternating expand and reduce passes until convergence
+        densify_alternating_phase(dctx, g, folding, &dopt);
+
+        // Restart at the end: keeps permanent deletions (ref_zero), undoes all added edges
+        restart(g, t, ref_zero, T, I);
+
+        double t_dit_end = get_wall_time();
+        int permanently_deleted = nr_before - g->nr;
+        long long off_gain = g->off - off_before;
+
+        printf(">>> [Densify Round %d] After Restart: permanently deleted=%d, remaining vertices=%d, edges=%d, offset=%lld (+%lld) in %6.2fs\n",
+               dit + 1, permanently_deleted, g->nr, g->m, g->off, off_gain, t_dit_end - t_dit_start);
+        fflush(stdout);
+
+        if (permanently_deleted == 0 && off_gain == 0)
+        {
+            printf(">>> Densification Outer Loop Converged at Round %d (no permanent progress).\n", dit + 1);
+            break;
+        }
+    }
+
+    printf("============================================================\n");
+    printf("Densification Phase Finished!\n");
+    printf("Handing clean, sparse graph over to normal expand & reduce loop:\n");
+    printf("Vertices: %d, Edges: %d, Offset: %lld\n", g->nr, g->m, g->off);
+    printf("============================================================\n");
+    fflush(stdout);
+
+    // Step 2: Normal expand and reduce loop
     for (int it = 0; it < MAX_ITERATIONS && !tle && g->nr > 0; it++)
     {
+        if (verbose)
+            printf("Iter %d: nr=%d, m=%d, off=%lld\n", it, g->nr, g->m, g->off);
+
+        if (g->nr == 0)
+            break;
+
         int t = g->t;
         int ref_zero = g->ref_zero_count;
 
@@ -342,6 +457,9 @@ int main(int argc, char **argv)
     free(I);
     free(B);
     free(RM);
+
+    if (dctx)
+        densify_context_destroy(dctx);
 
     graph_free(g);
 
