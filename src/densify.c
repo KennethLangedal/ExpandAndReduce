@@ -50,6 +50,8 @@ struct densify_context_struct
     int *order;
     int *col_tag;
     int *col_map;
+    int *N_prime;
+    int *C_dom;
 
     // HiGHS batch column buffers
     int col_capacity;
@@ -92,6 +94,8 @@ densify_context *densify_context_create(int initial_n)
     ctx->order = malloc(sizeof(int) * ctx->capacity_n);
     ctx->col_tag = calloc(ctx->capacity_n, sizeof(int));
     ctx->col_map = malloc(sizeof(int) * ctx->capacity_n);
+    ctx->N_prime = malloc(sizeof(int) * ctx->capacity_n);
+    ctx->C_dom = malloc(sizeof(int) * ctx->capacity_n);
 
     ctx->col_capacity = 256;
     ctx->col_cost = malloc(sizeof(double) * ctx->col_capacity);
@@ -131,6 +135,8 @@ static void densify_context_ensure_n(densify_context *ctx, int n)
     ctx->order = realloc(ctx->order, sizeof(int) * ctx->capacity_n);
     ctx->col_tag = realloc(ctx->col_tag, sizeof(int) * ctx->capacity_n);
     ctx->col_map = realloc(ctx->col_map, sizeof(int) * ctx->capacity_n);
+    ctx->N_prime = realloc(ctx->N_prime, sizeof(int) * ctx->capacity_n);
+    ctx->C_dom = realloc(ctx->C_dom, sizeof(int) * ctx->capacity_n);
 
     memset(ctx->stamp + old_cap, 0, sizeof(int) * (ctx->capacity_n - old_cap));
     memset(ctx->conflicts + old_cap, 0, sizeof(int) * (ctx->capacity_n - old_cap));
@@ -194,6 +200,8 @@ void densify_context_destroy(densify_context *ctx)
     free(ctx->order);
     free(ctx->col_tag);
     free(ctx->col_map);
+    free(ctx->N_prime);
+    free(ctx->C_dom);
 
     free(ctx->col_cost);
     free(ctx->col_lower);
@@ -1384,3 +1392,705 @@ int densify_alternating_phase(densify_context *ctx, graph *g, int folding, const
     free(B);
     return total_vertices_reduced;
 }
+
+// -----------------------------------------------------------------------------
+// Temporary Neighborhood Densification & Domination Reduction
+// -----------------------------------------------------------------------------
+
+int densify_test_pair_heuristic_extended(densify_context *ctx, graph *g, int u, const int *N_prime, int N_prime_count, int v, const densify_options *opt)
+{
+    assert(g != NULL);
+    assert(ctx != NULL);
+
+    if (u < 0 || u >= g->n || v < 0 || v >= g->n || u == v)
+        return 0;
+
+    if (!g->A[u] || !g->A[v] || graph_is_neighbor(g, u, v))
+        return 0;
+
+    if (opt && opt->max_degree > 0 && (g->D[u] > opt->max_degree || g->D[v] > opt->max_degree))
+        return 0;
+
+    densify_context_ensure_n(ctx, g->n);
+
+    if (ctx->cur_tag > 1000000000)
+    {
+        memset(ctx->stamp, 0, sizeof(int) * ctx->capacity_n);
+        memset(ctx->in_set, 0, sizeof(int) * ctx->capacity_n);
+        ctx->cur_tag = 0;
+    }
+    int tag_u = ++ctx->cur_tag;
+    int tag_v = ++ctx->cur_tag;
+    int tag_both = ++ctx->cur_tag;
+
+    ctx->stamp[u] = tag_u;
+    for (int i = 0; i < N_prime_count; i++)
+    {
+        int w = N_prime[i];
+        if (w == v)
+            return 0; // Already in N'(u)
+        ctx->stamp[w] = tag_u;
+    }
+
+    ctx->stamp[v] = tag_v;
+    for (int i = 0; i < g->D[v]; i++)
+    {
+        int w = g->V[v][i];
+        if (ctx->stamp[w] == tag_u)
+            ctx->stamp[w] = tag_both;
+        else
+            ctx->stamp[w] = tag_v;
+    }
+
+    int C_size = 0, Cu_size = 0, Cv_size = 0;
+    long long w_C = 0, w_Cu = 0, w_Cv = 0;
+
+    // Scan N'(u)
+    for (int i = 0; i < N_prime_count; i++)
+    {
+        int r = N_prime[i];
+        if (!g->A[r])
+            continue;
+
+        int ok = 1;
+        for (int j = 0; j < g->D[r]; j++)
+        {
+            int st = ctx->stamp[g->V[r][j]];
+            if (st != tag_u && st != tag_v && st != tag_both)
+            {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok)
+        {
+            ctx->C[C_size++] = r;
+            w_C += g->W[r];
+            if (ctx->stamp[r] == tag_u)
+            {
+                ctx->Cu[Cu_size++] = r;
+                w_Cu += g->W[r];
+            }
+        }
+    }
+
+    // Scan N(v)
+    for (int i = 0; i < g->D[v]; i++)
+    {
+        int r = g->V[v][i];
+        if (!g->A[r] || ctx->stamp[r] == tag_both)
+            continue;
+
+        int ok = 1;
+        for (int j = 0; j < g->D[r]; j++)
+        {
+            int st = ctx->stamp[g->V[r][j]];
+            if (st != tag_u && st != tag_v && st != tag_both)
+            {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok)
+        {
+            ctx->C[C_size++] = r;
+            w_C += g->W[r];
+            ctx->Cv[Cv_size++] = r;
+            w_Cv += g->W[r];
+        }
+    }
+
+    if (C_size == 0)
+        return 0;
+
+    int restarts = (opt && opt->num_restarts > 0) ? opt->num_restarts : 4;
+    int tag_mwis = (ctx->cur_tag += 50);
+
+    // Case 1: replace u only (target: W[u])
+    if (w_Cu >= g->W[u])
+    {
+        if (mwis_check(g, ctx->Cu, Cu_size, g->W[u], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis, restarts))
+            return 1;
+    }
+
+    // Case 2: replace v only (target: W[v])
+    if (w_Cv >= g->W[v])
+    {
+        if (mwis_check(g, ctx->Cv, Cv_size, g->W[v], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis + 15, restarts))
+            return 1;
+    }
+
+    // Case 3: replace both u and v (target: W[u] + W[v])
+    if (w_C >= g->W[u] + g->W[v])
+    {
+        if (mwis_check(g, ctx->C, C_size, g->W[u] + g->W[v], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis + 30, restarts))
+            return 1;
+    }
+
+    return 0;
+}
+
+int densify_test_pair_highs_extended(densify_context *ctx, graph *g, int u, const int *N_prime, int N_prime_count, int v, const densify_options *opt)
+{
+    assert(g != NULL);
+    assert(ctx != NULL);
+
+    if (u < 0 || u >= g->n || v < 0 || v >= g->n || u == v)
+        return 0;
+
+    if (!g->A[u] || !g->A[v] || graph_is_neighbor(g, u, v))
+        return 0;
+
+    if (opt && opt->max_degree > 0 && (g->D[u] > opt->max_degree || g->D[v] > opt->max_degree))
+        return 0;
+
+    densify_context_ensure_n(ctx, g->n);
+
+    if (ctx->cur_tag > 1000000000)
+    {
+        memset(ctx->stamp, 0, sizeof(int) * ctx->capacity_n);
+        memset(ctx->col_tag, 0, sizeof(int) * ctx->capacity_n);
+        ctx->cur_tag = 0;
+    }
+    int tag_u = ++ctx->cur_tag;
+    int tag_v = ++ctx->cur_tag;
+    int tag_both = ++ctx->cur_tag;
+
+    ctx->stamp[u] = tag_u;
+    for (int i = 0; i < N_prime_count; i++)
+    {
+        int w = N_prime[i];
+        if (w == v)
+            return 0;
+        ctx->stamp[w] = tag_u;
+    }
+
+    ctx->stamp[v] = tag_v;
+    for (int i = 0; i < g->D[v]; i++)
+    {
+        int w = g->V[v][i];
+        if (ctx->stamp[w] == tag_u)
+            ctx->stamp[w] = tag_both;
+        else
+            ctx->stamp[w] = tag_v;
+    }
+
+    int C_size = 0;
+    long long total_c_weight = 0;
+
+    // Scan N'(u)
+    for (int i = 0; i < N_prime_count; i++)
+    {
+        int r = N_prime[i];
+        if (!g->A[r])
+            continue;
+
+        int ok = 1;
+        for (int j = 0; j < g->D[r]; j++)
+        {
+            int st = ctx->stamp[g->V[r][j]];
+            if (st != tag_u && st != tag_v && st != tag_both)
+            {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok)
+        {
+            ctx->C[C_size++] = r;
+            total_c_weight += g->W[r];
+        }
+    }
+
+    // Scan N(v)
+    for (int i = 0; i < g->D[v]; i++)
+    {
+        int r = g->V[v][i];
+        if (!g->A[r] || ctx->stamp[r] == tag_both)
+            continue;
+
+        int ok = 1;
+        for (int j = 0; j < g->D[r]; j++)
+        {
+            int st = ctx->stamp[g->V[r][j]];
+            if (st != tag_u && st != tag_v && st != tag_both)
+            {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok)
+        {
+            ctx->C[C_size++] = r;
+            total_c_weight += g->W[r];
+        }
+    }
+
+    long long min_uv_weight = g->W[u] < g->W[v] ? g->W[u] : g->W[v];
+    if (C_size == 0 || total_c_weight < min_uv_weight)
+        return 0;
+
+    int num_cols = C_size + 2;
+    int col_u = C_size;
+    int col_v = C_size + 1;
+
+    densify_context_ensure_cols(ctx, num_cols);
+
+    for (int i = 0; i < C_size; i++)
+    {
+        ctx->col_cost[i] = (double)g->W[ctx->C[i]];
+        ctx->col_lower[i] = 0.0;
+        ctx->col_upper[i] = 1.0;
+        ctx->col_integrality[i] = kHighsVarTypeInteger;
+    }
+    ctx->col_cost[col_u] = -(double)g->W[u];
+    ctx->col_lower[col_u] = 0.0;
+    ctx->col_upper[col_u] = 1.0;
+    ctx->col_integrality[col_u] = kHighsVarTypeInteger;
+
+    ctx->col_cost[col_v] = -(double)g->W[v];
+    ctx->col_lower[col_v] = 0.0;
+    ctx->col_upper[col_v] = 1.0;
+    ctx->col_integrality[col_v] = kHighsVarTypeInteger;
+
+    int tag_col = ++ctx->cur_tag;
+    for (int i = 0; i < C_size; i++)
+    {
+        int w = ctx->C[i];
+        ctx->col_tag[w] = tag_col;
+        ctx->col_map[w] = i;
+    }
+
+    int max_est_rows = 1 + 2 * C_size;
+    for (int i = 0; i < C_size; i++)
+        max_est_rows += g->D[ctx->C[i]];
+    densify_context_ensure_rows(ctx, max_est_rows, max_est_rows * 2);
+
+    int num_rows = 0;
+    int num_nz = 0;
+
+    // Row 0: x_u + x_v >= 1
+    ctx->row_lower[num_rows] = 1.0;
+    ctx->row_upper[num_rows] = 2.0;
+    ctx->row_starts[num_rows] = num_nz;
+    ctx->row_indices[num_nz] = col_u;
+    ctx->row_values[num_nz++] = 1.0;
+    ctx->row_indices[num_nz] = col_v;
+    ctx->row_values[num_nz++] = 1.0;
+    num_rows++;
+
+    // Row: x_w - x_u <= 0 for w in N'(u) \cap C
+    for (int i = 0; i < C_size; i++)
+    {
+        int w = ctx->C[i];
+        if (ctx->stamp[w] == tag_u || ctx->stamp[w] == tag_both)
+        {
+            ctx->row_lower[num_rows] = -ctx->inf;
+            ctx->row_upper[num_rows] = 0.0;
+            ctx->row_starts[num_rows] = num_nz;
+            ctx->row_indices[num_nz] = i;
+            ctx->row_values[num_nz++] = 1.0;
+            ctx->row_indices[num_nz] = col_u;
+            ctx->row_values[num_nz++] = -1.0;
+            num_rows++;
+        }
+    }
+
+    // Row: x_w - x_v <= 0 for w in N(v) \cap C
+    for (int i = 0; i < C_size; i++)
+    {
+        int w = ctx->C[i];
+        if (ctx->stamp[w] == tag_v || ctx->stamp[w] == tag_both)
+        {
+            ctx->row_lower[num_rows] = -ctx->inf;
+            ctx->row_upper[num_rows] = 0.0;
+            ctx->row_starts[num_rows] = num_nz;
+            ctx->row_indices[num_nz] = i;
+            ctx->row_values[num_nz++] = 1.0;
+            ctx->row_indices[num_nz] = col_v;
+            ctx->row_values[num_nz++] = -1.0;
+            num_rows++;
+        }
+    }
+
+    // Conflict rows: x_w1 + x_w2 <= 1 for all edges in G[C]
+    for (int i = 0; i < C_size; i++)
+    {
+        int w1 = ctx->C[i];
+        for (int k = 0; k < g->D[w1]; k++)
+        {
+            int w2 = g->V[w1][k];
+            if (w2 > w1 && ctx->col_tag[w2] == tag_col)
+            {
+                int j = ctx->col_map[w2];
+                ctx->row_lower[num_rows] = -ctx->inf;
+                ctx->row_upper[num_rows] = 1.0;
+                ctx->row_starts[num_rows] = num_nz;
+                ctx->row_indices[num_nz] = i;
+                ctx->row_values[num_nz++] = 1.0;
+                ctx->row_indices[num_nz] = j;
+                ctx->row_values[num_nz++] = 1.0;
+                num_rows++;
+            }
+        }
+    }
+
+    double time_limit = (opt && opt->time_limit_sec > 0.0) ? opt->time_limit_sec : 0.1;
+    Highs_setDoubleOptionValue(ctx->highs, "time_limit", time_limit);
+    Highs_changeObjectiveSense(ctx->highs, kHighsObjSenseMaximize);
+
+    Highs_addCols(ctx->highs, num_cols, ctx->col_cost, ctx->col_lower, ctx->col_upper, 0, NULL, NULL, NULL);
+    Highs_changeColsIntegralityByRange(ctx->highs, 0, num_cols - 1, ctx->col_integrality);
+    Highs_addRows(ctx->highs, num_rows, ctx->row_lower, ctx->row_upper, num_nz, ctx->row_starts, ctx->row_indices, ctx->row_values);
+
+    Highs_run(ctx->highs);
+
+    int can_densify = 0;
+    HighsInt status = Highs_getModelStatus(ctx->highs);
+    HighsInt primal_status = kHighsSolutionStatusNone;
+    Highs_getIntInfoValue(ctx->highs, "primal_solution_status", &primal_status);
+
+    if (status == kHighsModelStatusOptimal || status == kHighsModelStatusObjectiveTarget || primal_status == kHighsSolutionStatusFeasible)
+    {
+        double obj = Highs_getObjectiveValue(ctx->highs);
+        if (obj >= -1e-5)
+        {
+            can_densify = 1;
+        }
+    }
+
+    Highs_clearModel(ctx->highs);
+
+    return can_densify;
+}
+
+int densify_test_pair_extended(densify_context *ctx, graph *g, int u, const int *N_prime, int N_prime_count, int v, const densify_options *opt)
+{
+    if (opt && opt->use_heuristic)
+    {
+        return densify_test_pair_heuristic_extended(ctx, g, u, N_prime, N_prime_count, v, opt);
+    }
+    return densify_test_pair_highs_extended(ctx, g, u, N_prime, N_prime_count, v, opt);
+}
+
+static inline int test_neighborhood_domination(densify_context *ctx, graph *g, int u, const int *N_prime, int n_prime_count, const densify_options *opt)
+{
+    if (n_prime_count == 0)
+        return 0;
+
+    if (ctx->cur_tag > 1000000000)
+    {
+        memset(ctx->stamp, 0, sizeof(int) * ctx->capacity_n);
+        ctx->cur_tag = 0;
+    }
+    int tag_dom = ++ctx->cur_tag;
+    ctx->stamp[u] = tag_dom;
+    for (int i = 0; i < n_prime_count; i++)
+        ctx->stamp[N_prime[i]] = tag_dom;
+
+    long long w_C_dom = 0;
+    int C_dom_size = 0;
+
+    for (int i = 0; i < n_prime_count; i++)
+    {
+        int v = N_prime[i];
+        if (!g->A[v])
+            continue;
+
+        int is_contained = 1;
+        for (int k = 0; k < g->D[v]; k++)
+        {
+            int w = g->V[v][k];
+            if (w == u)
+                continue;
+            if (ctx->stamp[w] != tag_dom)
+            {
+                is_contained = 0;
+                break;
+            }
+        }
+
+        if (is_contained)
+        {
+            // Single-vertex domination
+            if (g->W[v] > g->W[u] || (g->W[v] == g->W[u] && v < u))
+            {
+                graph_deactivate_vertex(g, u);
+                return 1;
+            }
+            ctx->C_dom[C_dom_size++] = v;
+            w_C_dom += g->W[v];
+        }
+    }
+
+    // Independent-set domination
+    if (w_C_dom >= g->W[u] && C_dom_size > 0)
+    {
+        int tag_mwis = (ctx->cur_tag += 50);
+        int restarts = (opt && opt->num_restarts > 0) ? opt->num_restarts : 4;
+        if (mwis_check(g, ctx->C_dom, C_dom_size, g->W[u], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis, restarts))
+        {
+            graph_deactivate_vertex(g, u);
+            return 2;
+        }
+    }
+
+    return 0;
+}
+
+int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const densify_options *opt, int *out_dom_type)
+{
+    if (out_dom_type)
+        *out_dom_type = 0;
+
+    if (!g->A[u])
+        return 0;
+
+    // Check if u is already isolated (degree 0)
+    if (g->D[u] == 0)
+    {
+        g->off += g->W[u];
+        graph_deactivate_vertex(g, u);
+        if (out_dom_type)
+            *out_dom_type = 3;
+        return 1;
+    }
+
+    // Heavy vertex reduction: if W[u] >= sum(W[v] for v in N(u)),
+    // u can be safely included in the independent set and all neighbors deleted.
+    long long nbr_weight = 0;
+    for (int i = 0; i < g->D[u]; i++)
+        nbr_weight += g->W[g->V[u][i]];
+
+    if (g->W[u] >= nbr_weight)
+    {
+        while (g->D[u] > 0)
+        {
+            int v = g->V[u][0];
+            graph_deactivate_vertex(g, v);
+        }
+        g->off += g->W[u];
+        graph_deactivate_vertex(g, u);
+        if (out_dom_type)
+            *out_dom_type = 3;
+        return 1;
+    }
+
+    densify_context_ensure_n(ctx, g->n);
+
+    // Initial N'(u) = active neighbors in g
+    int n_prime_count = 0;
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        int v = g->V[u][i];
+        if (g->A[v])
+            ctx->N_prime[n_prime_count++] = v;
+    }
+
+    // Step 0: Test domination immediately on initial N(u)
+    int initial_dom = test_neighborhood_domination(ctx, g, u, ctx->N_prime, n_prime_count, opt);
+    if (initial_dom > 0)
+    {
+        if (out_dom_type)
+            *out_dom_type = initial_dom;
+        return 1;
+    }
+
+    int max_dist = (opt && opt->max_distance > 0) ? opt->max_distance : 3;
+
+    while (g->A[u] && !is_tle())
+    {
+        if (ctx->cur_tag > 1000000000)
+        {
+            memset(ctx->stamp, 0, sizeof(int) * ctx->capacity_n);
+            ctx->cur_tag = 0;
+        }
+        int tag_bfs = ++ctx->cur_tag;
+
+        ctx->stamp[u] = tag_bfs;
+        ctx->dist[u] = 0;
+        int head = 0, tail = 0;
+        ctx->queue[tail++] = u;
+
+        // Depth 1: all elements of N'(u)
+        for (int i = 0; i < n_prime_count; i++)
+        {
+            int c = ctx->N_prime[i];
+            if (g->A[c] && ctx->stamp[c] != tag_bfs)
+            {
+                ctx->stamp[c] = tag_bfs;
+                ctx->dist[c] = 1;
+                ctx->queue[tail++] = c;
+            }
+        }
+
+        int num_candidates = 0;
+        while (head < tail)
+        {
+            int curr = ctx->queue[head++];
+            int d = ctx->dist[curr];
+            if (d >= max_dist)
+                continue;
+
+            for (int i = 0; i < g->D[curr]; i++)
+            {
+                int v = g->V[curr][i];
+                if (g->A[v] && ctx->stamp[v] != tag_bfs)
+                {
+                    ctx->stamp[v] = tag_bfs;
+                    ctx->dist[v] = d + 1;
+                    ctx->queue[tail++] = v;
+                    ctx->candidates[num_candidates++] = v;
+                }
+            }
+        }
+
+        if (num_candidates == 0)
+            break;
+
+        int edges_added_pass = 0;
+        for (int i = 0; i < num_candidates && !is_tle(); i++)
+        {
+            int v = ctx->candidates[i];
+            if (!g->A[v])
+                continue;
+
+            if (opt && opt->max_degree > 0 && g->D[v] > opt->max_degree)
+                continue;
+
+            if (densify_test_pair_extended(ctx, g, u, ctx->N_prime, n_prime_count, v, opt))
+            {
+                ctx->N_prime[n_prime_count++] = v;
+                edges_added_pass++;
+
+                if (opt && opt->max_edges_to_add > 0 && edges_added_pass >= opt->max_edges_to_add)
+                    break;
+            }
+        }
+
+        // End-of-pass Domination Check
+        int dom_res = test_neighborhood_domination(ctx, g, u, ctx->N_prime, n_prime_count, opt);
+        if (dom_res > 0)
+        {
+            if (out_dom_type)
+                *out_dom_type = dom_res;
+            return 1;
+        }
+
+        // Loop back to (1) while u is not dominated and we added at least one edge
+        if (edges_added_pass == 0)
+            break;
+
+        if (opt && opt->max_edges_to_add > 0 && edges_added_pass >= opt->max_edges_to_add)
+            break;
+    }
+
+    return 0;
+}
+
+int densify_dominate_reduce_graph(densify_context *ctx, graph *g, const densify_options *opt, int *out_single_dom, int *out_set_dom, int *out_heavy_dom)
+{
+    if (!g || g->nr <= 1)
+        return 0;
+
+    densify_options default_opt = densify_default_options();
+    const densify_options *actual_opt = opt ? opt : &default_opt;
+
+    densify_context_ensure_n(ctx, g->n);
+
+    int total_single_dom = 0;
+    int total_set_dom = 0;
+    int total_heavy_dom = 0;
+    int total_reduced = 0;
+    int outer_pass = 0;
+
+    if (actual_opt->verbose)
+    {
+        printf("============================================================\n");
+        printf("Starting Densification Domination Reduction Loop\n");
+        printf("Initial graph: vertices=%d, edges=%d, offset=%lld\n", g->nr, g->m, g->off);
+        printf("Exploring distance 2+3 neighborhoods, temporary N'(u), fixed-point\n");
+        printf("============================================================\n");
+        fflush(stdout);
+    }
+
+    double t_start = get_wall_time();
+
+    while (g->nr > 0 && !is_tle())
+    {
+        outer_pass++;
+        int pass_single = 0;
+        int pass_set = 0;
+        int pass_heavy = 0;
+        int nr_before_pass = g->nr;
+        double t_pass_start = get_wall_time();
+
+        for (int u = 0; u < g->n && g->nr > 0 && !is_tle(); u++)
+        {
+            if (!g->A[u])
+                continue;
+
+            int dom_type = 0;
+            if (densify_dominate_reduce_vertex(ctx, g, u, actual_opt, &dom_type))
+            {
+                if (dom_type == 1)
+                    pass_single++;
+                else if (dom_type == 2)
+                    pass_set++;
+                else if (dom_type == 3)
+                    pass_heavy++;
+            }
+        }
+
+        int pass_reduced = nr_before_pass - g->nr;
+        total_single_dom += pass_single;
+        total_set_dom += pass_set;
+        total_heavy_dom += pass_heavy;
+        total_reduced += pass_reduced;
+
+        double t_pass_end = get_wall_time();
+
+        if (actual_opt->verbose)
+        {
+            printf("[Outer Pass %2d] Reduced: %d (heavy-dom: %d, single-dom: %d, set-dom: %d) in %6.2fs | Remaining: vertices=%d, edges=%d, offset=%lld\n",
+                   outer_pass, pass_reduced, pass_heavy, pass_single, pass_set, t_pass_end - t_pass_start, g->nr, g->m, g->off);
+            fflush(stdout);
+        }
+
+        if (pass_reduced == 0)
+        {
+            if (actual_opt->verbose)
+            {
+                printf(">>> Densification Domination Converged at Pass %d (fixed point reached).\n", outer_pass);
+                fflush(stdout);
+            }
+            break;
+        }
+    }
+
+    double t_end = get_wall_time();
+    if (actual_opt->verbose)
+    {
+        printf("============================================================\n");
+        printf("Densification Domination Summary:\n");
+        printf("Total passes: %d\n", outer_pass);
+        printf("Total heavy-vertex reductions: %d\n", total_heavy_dom);
+        printf("Total single-vertex dominations: %d\n", total_single_dom);
+        printf("Total independent-set dominations: %d\n", total_set_dom);
+        printf("Total vertices eliminated: %d\n", total_reduced);
+        printf("Remaining graph: vertices=%d, edges=%d, offset=%lld\n", g->nr, g->m, g->off);
+        printf("Total elapsed time: %6.2fs\n", t_end - t_start);
+        printf("============================================================\n");
+        fflush(stdout);
+    }
+
+    if (out_single_dom)
+        *out_single_dom = total_single_dom;
+    if (out_set_dom)
+        *out_set_dom = total_set_dom;
+    if (out_heavy_dom)
+        *out_heavy_dom = total_heavy_dom;
+
+    return total_reduced;
+}
+

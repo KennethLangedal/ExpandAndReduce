@@ -203,6 +203,50 @@ static inline int expand_and_reduce(graph *g, int u, int *X, int *Y, int *T, int
     return 0;
 }
 
+// Expand and densify-reduce the neighborhood of u
+static inline int expand_and_densify_reduce(densify_context *dctx, const densify_options *dopt, graph *g, int u, int *X, int *Y, int *T, int max)
+{
+    if (!g->A[u])
+        return 0;
+
+    int ref_n = g->nr;
+    int n = neighborhood_missing_links(g, u, max, X, Y, T);
+
+    // Clique fold
+    if (n == 0)
+    {
+        graph_reduce(g, u, folding);
+        return g->nr < ref_n;
+    }
+
+    while (n > 0 && !tle)
+    {
+        // Expand missing links
+        for (int i = 0; i < n; i++)
+            graph_edge_expansion(g, X[i], Y[i]);
+
+        // Reduce using densify_dominate_reduce_graph
+        densify_dominate_reduce_graph(dctx, g, dopt, NULL, NULL, NULL);
+
+        if (g->nr < ref_n)
+            return 1;
+
+        if (!g->A[u])
+            break;
+
+        n = neighborhood_missing_links(g, u, max, X, Y, T);
+        if (n == 0)
+        {
+            graph_reduce(g, u, folding);
+            if (g->nr < ref_n)
+                return 1;
+            break;
+        }
+    }
+
+    return g->nr < ref_n;
+}
+
 // Loop over the graph while trying to reduce
 static inline void reduce_loop(graph *g, int n, int *X, int *Y, int *T, int sort, int max, int slack, int force)
 {
@@ -281,11 +325,10 @@ int main(int argc, char **argv)
     dopt = densify_default_options();
     dopt.verbose = 0;
     dopt.max_degree = 0; // No degree limits as requested
+    dopt.max_edges_to_add = 0; // Unlimited per-vertex edges added as requested
     char *env_edges = getenv("DENSIFY_MAX_EDGES");
     if (env_edges)
         dopt.max_edges_to_add = atoi(env_edges);
-    else
-        dopt.max_edges_to_add = 8;
 
     char *env_dist = getenv("DENSIFY_MAX_DIST");
     if (env_dist)
@@ -293,170 +336,166 @@ int main(int argc, char **argv)
 
     dctx = densify_context_create(g->n);
 
-    // Step 1: Alternating densify-expand and reduction process in a loop with restart
-    int max_densify_rounds = 32;
-    char *env_rounds = getenv("DENSIFY_MAX_ROUNDS");
-    if (env_rounds)
-        max_densify_rounds = atoi(env_rounds);
+    // Comparison Experiment: Reference Expand & Reduce vs Densify-Dominate Expand & Reduce
+    int max_links = 8;
+    char *env_links = getenv("MAX_MISSING_LINKS");
+    if (env_links)
+        max_links = atoi(env_links);
 
     printf("============================================================\n");
-    printf("Starting Densification Outer Loop (with Restart)\n");
-    printf("Initial graph: vertices=%d, edges=%d, offset=%lld\n", g->nr, g->m, g->off);
-    printf("Max edges per vertex: %d, max distance: %d, max outer rounds: %d\n",
-           dopt.max_edges_to_add, dopt.max_distance, max_densify_rounds);
+    printf("Starting Expand & Reduce Comparison Experiment (Single Pass)\n");
+    printf("Graph: vertices=%d, edges=%d, offset=%lld, max_links=%d\n", g->nr, g->m, g->off, max_links);
+    printf("Comparing Reference (expand_and_reduce) vs Densify (expand_and_densify_reduce)\n");
     printf("============================================================\n");
     fflush(stdout);
 
-    for (int dit = 0; dit < max_densify_rounds && !tle && g->nr > 0; dit++)
+    int total_evaluated = 0;
+    int both_yes = 0;
+    int densify_only_yes = 0;
+    int ref_only_yes = 0;
+    int both_no = 0;
+
+    reduce_loop(g, MAX_IMPROVEMENT_LOOPS, X, Y, T, 1, 32, 0, 0);
+
+    while (1)
     {
-        int t = g->t;
-        int ref_zero = g->ref_zero_count;
-        int nr_before = g->nr;
-        long long off_before = g->off;
-        double t_dit_start = get_wall_time();
+    for (int u = 0; u < g->n && g->nr > 0 && !tle; u++)
+    {
+        if (!g->A[u])
+            continue;
 
-        printf("\n>>> [Densify Round %d] Start: vertices=%d, edges=%d, offset=%lld\n",
-               dit + 1, g->nr, g->m, g->off);
-        fflush(stdout);
+        total_evaluated++;
+        int t_start = g->t;
+        int nr_start = g->nr;
 
-        // Run this process: alternating expand and reduce passes until convergence
-        densify_alternating_phase(dctx, g, folding, &dopt);
+        // 1. Evaluate Reference Method
+        int ref_res = expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
+        int ref_nr = g->nr;
+        int ref_yes = (ref_res && ref_nr < nr_start);
 
-        // Restart at the end: keeps permanent deletions (ref_zero), undoes all added edges
-        restart(g, t, ref_zero, T, I);
+        // Undo reference changes
+        graph_undo_changes(g, t_start);
 
-        double t_dit_end = get_wall_time();
-        int permanently_deleted = nr_before - g->nr;
-        long long off_gain = g->off - off_before;
+        // 2. Evaluate Densify Method
+        int densify_res = expand_and_densify_reduce(dctx, &dopt, g, u, X, Y, T, max_links);
+        int densify_nr = g->nr;
+        int densify_yes = (densify_res && densify_nr < nr_start);
 
-        printf(">>> [Densify Round %d] After Restart: permanently deleted=%d, remaining vertices=%d, edges=%d, offset=%lld (+%lld) in %6.2fs\n",
-               dit + 1, permanently_deleted, g->nr, g->m, g->off, off_gain, t_dit_end - t_dit_start);
-        fflush(stdout);
-
-        if (permanently_deleted == 0 && off_gain == 0)
+        // 3. Keep decision:
+        // When both succeed, keep whichever achieves the smaller nr (tied: prefer densify).
+        const char *kept = "None";
+        if (densify_yes && ref_yes)
         {
-            printf(">>> Densification Outer Loop Converged at Round %d (no permanent progress).\n", dit + 1);
-            break;
+            both_yes++;
+            if (densify_nr < ref_nr)
+            {
+                // Densify achieved smaller nr: keep Densify (already in Densify's state)
+                kept = "Densify";
+            }
+            else if (ref_nr < densify_nr)
+            {
+                // Reference achieved smaller nr: undo Densify, re-run Reference
+                graph_undo_changes(g, t_start);
+                expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
+                kept = "Ref";
+            }
+            else
+            {
+                // Tied on nr: keep Densify
+                kept = "Densify";
+            }
         }
-    }
+        else if (densify_yes)
+        {
+            densify_only_yes++;
+            kept = "Densify";
+        }
+        else if (ref_yes)
+        {
+            ref_only_yes++;
+            graph_undo_changes(g, t_start);
+            expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
+            kept = "Ref";
+        }
+        else
+        {
+            both_no++;
+            graph_undo_changes(g, t_start);
+            kept = "None";
+        }
 
-    printf("============================================================\n");
-    printf("Densification Phase Finished!\n");
-    printf("Handing clean, sparse graph over to normal expand & reduce loop:\n");
-    printf("Vertices: %d, Edges: %d, Offset: %lld\n", g->nr, g->m, g->off);
-    printf("============================================================\n");
-    fflush(stdout);
-
-    // Step 2: Normal expand and reduce loop
-    for (int it = 0; it < MAX_ITERATIONS && !tle && g->nr > 0; it++)
-    {
-        if (verbose)
-            printf("Iter %d: nr=%d, m=%d, off=%lld\n", it, g->nr, g->m, g->off);
-
-        if (g->nr == 0)
-            break;
-
-        int t = g->t;
-        int ref_zero = g->ref_zero_count;
-
-        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, X, Y, T, (it % 2) == 0, STARTING_CEILING + it * INCREMENT_CEILING, 0, 0);
-        if (verbose)
-            printf("%d %d %lld\n", g->nr, g->m, g->off);
-
-        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, X, Y, T, (it % 2) == 0, STARTING_CEILING + it * INCREMENT_CEILING, 1, 0);
-        if (verbose)
-            printf("%d %d %lld\n", g->nr, g->m, g->off);
-
-        if (g->nr < FORCE_LIMIT)
-            reduce_loop(g, MAX_IMPROVEMENT_LOOPS, X, Y, T, it, STARTING_CEILING + it * FORCE_FACTOR, 1, 1);
-
-        restart(g, t, ref_zero, T, I);
-    }
-
-    folding = 0;
-    tle = 0;
-
-    if (g->nr > 0)
-    {
-        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, X, Y, T, 1, 32, 0, 0);
-        reduce_loop(g, MAX_IMPROVEMENT_LOOPS / 2, X, Y, T, 1, 32, 1, 0);
+        printf("[Vertex %4d] Ref: %-3s (nr: %4d) | Densify: %-3s (nr: %4d) -> Kept: %-7s | Graph: nr=%d, m=%d, off=%lld, zero=%d\n",
+               u + 1,
+               ref_yes ? "YES" : "NO", ref_nr,
+               densify_yes ? "YES" : "NO", densify_nr,
+               kept,
+               g->nr, g->m, g->off, g->ref_zero_count);
+        fflush(stdout);
+    }   
     }
 
     double t1 = get_wall_time();
 
-    printf("%d,%d,%lld,%lf\n", g->nr, g->m, g->off, t1 - t0);
+    printf("\n============================================================\n");
+    printf("Comparison Experiment Summary (Single Pass over Vertices):\n");
+    printf("============================================================\n");
+    printf("Total vertices evaluated:    %d\n", total_evaluated);
+    printf("Both YES (both reduced):     %d\n", both_yes);
+    printf("Densify ONLY YES (Ref NO):   %d  <-- New reductions unlocked by densify!\n", densify_only_yes);
+    printf("Ref ONLY YES (Densify NO):   %d\n", ref_only_yes);
+    printf("Both NO (both failed):       %d\n", both_no);
+    printf("------------------------------------------------------------\n");
+    printf("Total kept reductions:       %d (Densify kept: %d, Ref kept: %d)\n",
+           densify_only_yes + both_yes + ref_only_yes, densify_only_yes + both_yes, ref_only_yes);
+    printf("Final graph state:           vertices=%d, edges=%d, offset=%lld\n", g->nr, g->m, g->off);
+    printf("Total elapsed time:          %6.2fs\n", t1 - t0);
+    printf("============================================================\n");
+    fflush(stdout);
 
-    // Store reduced graph
-    int *RM = malloc(sizeof(int) * g->n);
-    int id = 0;
-    for (int u = 0; u < g->n; u++)
+    // Store reduced graph if output files provided
+    if (argc >= 4)
     {
-        if (!g->A[u])
-            continue;
-        RM[u] = id++;
-    }
+        int *RM = malloc(sizeof(int) * g->n);
+        int id = 0;
+        for (int u = 0; u < g->n; u++)
+        {
+            if (!g->A[u])
+                continue;
+            RM[u] = id++;
+        }
 
-    f = fopen(argv[2], "w");
-    fprintf(f, "%d %d 10\n", id, g->m);
-    for (int u = 0; u < g->n; u++)
-    {
-        if (!g->A[u])
-            continue;
-        fprintf(f, "%lld ", g->W[u]);
-        for (int i = 0; i < g->D[u]; i++)
-            fprintf(f, "%d ", RM[g->V[u][i]] + 1);
-        fprintf(f, "\n");
-    }
-    fclose(f);
+        f = fopen(argv[2], "w");
+        if (f)
+        {
+            fprintf(f, "%d %d 10\n", id, g->m);
+            for (int u = 0; u < g->n; u++)
+            {
+                if (!g->A[u])
+                    continue;
+                fprintf(f, "%lld ", g->W[u]);
+                for (int i = 0; i < g->D[u]; i++)
+                    fprintf(f, "%d ", RM[g->V[u][i]] + 1);
+                fprintf(f, "\n");
+            }
+            fclose(f);
+        }
 
-    int inc = 0, exc = 0;
-    for (int u = 0; u < g->org_n; u++)
-    {
-        if (I[u] < 0)
-            exc++;
-        else if (I[u] > 0)
-            inc++;
-    }
+        f = fopen(argv[3], "w");
+        if (f)
+        {
+            fprintf(f, "%% Reduced Graph Metadata\n");
+            fprintf(f, "included: 0\nexcluded: %d\nremaining: %d\n\n", g->org_n - g->nr, g->nr);
+            fclose(f);
+        }
 
-    // Storing the meta information
-    f = fopen(argv[3], "w");
-    fprintf(f, "%% Reduced Graph Metadata\n");
-    fprintf(f, "included: %d\nexcluded: %d\nremaining: %d\n\n", inc, exc, g->nr);
-    fprintf(f, "%% Vertices included in the independent set\n");
-    fprintf(f, "included_vertices: ");
-    for (int u = 0; u < g->org_n; u++)
-    {
-        if (I[u] <= 0)
-            continue;
-        fprintf(f, "%d ", u + 1);
+        free(RM);
     }
-    fprintf(f, "\n\n");
-    fprintf(f, "%% Vertices excluded from the independent set\n");
-    fprintf(f, "excluded_vertices: ");
-    for (int u = 0; u < g->org_n; u++)
-    {
-        if (I[u] >= 0)
-            continue;
-        fprintf(f, "%d ", u + 1);
-    }
-    fprintf(f, "\n\n");
-    fprintf(f, "%% Reverse mapping (reduced vertex ID: original set)\n");
-    for (int u = 0; u < g->n; u++)
-    {
-        if (!g->A[u])
-            continue;
-        fprintf(f, "map %d: ", RM[u] + 1);
-        recursive_print(f, g, u);
-        fprintf(f, "\n");
-    }
-    fclose(f);
 
     free(T);
     free(X);
     free(Y);
     free(I);
     free(B);
-    free(RM);
 
     if (dctx)
         densify_context_destroy(dctx);

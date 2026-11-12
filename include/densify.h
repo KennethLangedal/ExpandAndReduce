@@ -55,6 +55,17 @@ int densify_and_reduce_loop(densify_context *ctx, graph *g, int *B, int folding,
 // and reduce (domination/folding by vertex ID until fixed point) loops until a pass where nothing changes.
 int densify_alternating_phase(densify_context *ctx, graph *g, int folding, const densify_options *opt);
 
+// Extended pair densification test where vertex u has temporary neighborhood N_prime (count: N_prime_count)
+int densify_test_pair_extended(densify_context *ctx, graph *g, int u, const int *N_prime, int N_prime_count, int v, const densify_options *opt);
+
+// Tests and reduces vertex u using the temporary one-sided densification and domination framework.
+// Returns 1 if u was dominated and deactivated, 0 otherwise.
+// If dominated, out_dom_type is set to 1 (single-vertex domination) or 2 (independent-set domination).
+int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const densify_options *opt, int *out_dom_type);
+
+// Runs the fixed-point outer loop over active vertices (0..n-1) until convergence.
+int densify_dominate_reduce_graph(densify_context *ctx, graph *g, const densify_options *opt, int *out_single_dom, int *out_set_dom, int *out_heavy_dom);
+
 #ifdef __cplusplus
 }
 #endif
