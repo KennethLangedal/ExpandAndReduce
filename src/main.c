@@ -225,8 +225,8 @@ static inline int expand_and_densify_reduce(densify_context *dctx, const densify
         for (int i = 0; i < n; i++)
             graph_edge_expansion(g, X[i], Y[i]);
 
-        // Reduce using densify_dominate_reduce_graph
-        densify_dominate_reduce_graph(dctx, g, dopt, NULL, NULL, NULL);
+        // Reduce locally around u using two-tier worklist (graph_reduce + densify)
+        densify_dominate_reduce_local(dctx, g, u, folding, ref_n, dopt);
 
         if (g->nr < ref_n)
             return 1;
@@ -324,7 +324,7 @@ int main(int argc, char **argv)
 
     dopt = densify_default_options();
     dopt.verbose = 0;
-    dopt.max_degree = 0; // No degree limits as requested
+    dopt.max_degree = 0;       // No degree limits as requested
     dopt.max_edges_to_add = 0; // Unlimited per-vertex edges added as requested
     char *env_edges = getenv("DENSIFY_MAX_EDGES");
     if (env_edges)
@@ -337,7 +337,7 @@ int main(int argc, char **argv)
     dctx = densify_context_create(g->n);
 
     // Comparison Experiment: Reference Expand & Reduce vs Densify-Dominate Expand & Reduce
-    int max_links = 8;
+    int max_links = 32;
     char *env_links = getenv("MAX_MISSING_LINKS");
     if (env_links)
         max_links = atoi(env_links);
@@ -355,83 +355,92 @@ int main(int argc, char **argv)
     int ref_only_yes = 0;
     int both_no = 0;
 
-    reduce_loop(g, MAX_IMPROVEMENT_LOOPS, X, Y, T, 1, 32, 0, 0);
-
-    while (1)
+    while (g->nr > 0)
     {
-    for (int u = 0; u < g->n && g->nr > 0 && !tle; u++)
-    {
-        if (!g->A[u])
-            continue;
+        reduce_loop(g, MAX_IMPROVEMENT_LOOPS, X, Y, T, 1, 64, 0, 0);
 
-        total_evaluated++;
-        int t_start = g->t;
-        int nr_start = g->nr;
-
-        // 1. Evaluate Reference Method
-        int ref_res = expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
-        int ref_nr = g->nr;
-        int ref_yes = (ref_res && ref_nr < nr_start);
-
-        // Undo reference changes
-        graph_undo_changes(g, t_start);
-
-        // 2. Evaluate Densify Method
-        int densify_res = expand_and_densify_reduce(dctx, &dopt, g, u, X, Y, T, max_links);
-        int densify_nr = g->nr;
-        int densify_yes = (densify_res && densify_nr < nr_start);
-
-        // 3. Keep decision:
-        // When both succeed, keep whichever achieves the smaller nr (tied: prefer densify).
-        const char *kept = "None";
-        if (densify_yes && ref_yes)
+        int start_n = g->n + 1;
+        while (g->nr < start_n)
         {
-            both_yes++;
-            if (densify_nr < ref_nr)
+            start_n = g->nr;
+            for (int u = 0; u < g->n && g->nr > 0 && !tle; u++)
             {
-                // Densify achieved smaller nr: keep Densify (already in Densify's state)
-                kept = "Densify";
-            }
-            else if (ref_nr < densify_nr)
-            {
-                // Reference achieved smaller nr: undo Densify, re-run Reference
+                if (!g->A[u])
+                    continue;
+
+                total_evaluated++;
+                int t_start = g->t;
+                int nr_start = g->nr;
+
+                // 1. Evaluate Reference Method
+                int ref_res = expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
+                int ref_nr = g->nr;
+                int ref_yes = (ref_res && ref_nr < nr_start);
+
+                // Undo reference changes
                 graph_undo_changes(g, t_start);
-                expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
-                kept = "Ref";
+
+                // 2. Evaluate Densify Method
+                int densify_res = expand_and_densify_reduce(dctx, &dopt, g, u, X, Y, T, max_links);
+                int densify_nr = g->nr;
+                int densify_yes = (densify_res && densify_nr < nr_start);
+
+                // 3. Keep decision:
+                // When both succeed, keep whichever achieves the smaller nr (tied: prefer densify).
+                const char *kept = "None";
+                if (densify_yes && ref_yes)
+                {
+                    both_yes++;
+                    if (densify_nr < ref_nr)
+                    {
+                        // Densify achieved smaller nr: keep Densify (already in Densify's state)
+                        kept = "Densify";
+                    }
+                    else if (ref_nr < densify_nr)
+                    {
+                        // Reference achieved smaller nr: undo Densify, re-run Reference
+                        graph_undo_changes(g, t_start);
+                        expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
+                        kept = "Ref";
+                    }
+                    else
+                    {
+                        // Tied on nr: keep Densify
+                        kept = "Densify";
+                    }
+                }
+                else if (densify_yes)
+                {
+                    densify_only_yes++;
+                    kept = "Densify";
+                }
+                else if (ref_yes)
+                {
+                    ref_only_yes++;
+                    graph_undo_changes(g, t_start);
+                    expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
+                    kept = "Ref";
+                }
+                else
+                {
+                    both_no++;
+                    graph_undo_changes(g, t_start);
+                    kept = "None";
+                }
+
+                printf("[Vertex %4d] Ref: %-3s (nr: %4d) | Densify: %-3s (nr: %4d) -> Kept: %-7s | Graph: nr=%d, m=%d, off=%lld, zero=%d\n",
+                       u + 1,
+                       ref_yes ? "YES" : "NO", ref_nr,
+                       densify_yes ? "YES" : "NO", densify_nr,
+                       kept,
+                       g->nr, g->m, g->off, g->ref_zero_count);
+                fflush(stdout);
             }
-            else
-            {
-                // Tied on nr: keep Densify
-                kept = "Densify";
-            }
-        }
-        else if (densify_yes)
-        {
-            densify_only_yes++;
-            kept = "Densify";
-        }
-        else if (ref_yes)
-        {
-            ref_only_yes++;
-            graph_undo_changes(g, t_start);
-            expand_and_reduce(g, u, X, Y, T, max_links, 0, 0);
-            kept = "Ref";
-        }
-        else
-        {
-            both_no++;
-            graph_undo_changes(g, t_start);
-            kept = "None";
         }
 
-        printf("[Vertex %4d] Ref: %-3s (nr: %4d) | Densify: %-3s (nr: %4d) -> Kept: %-7s | Graph: nr=%d, m=%d, off=%lld, zero=%d\n",
-               u + 1,
-               ref_yes ? "YES" : "NO", ref_nr,
-               densify_yes ? "YES" : "NO", densify_nr,
-               kept,
-               g->nr, g->m, g->off, g->ref_zero_count);
-        fflush(stdout);
-    }   
+        printf("Restarting\n");
+
+        restart(g, 0, 0, T, I);
     }
 
     double t1 = get_wall_time();

@@ -52,6 +52,10 @@ struct densify_context_struct
     int *col_map;
     int *N_prime;
     int *C_dom;
+    int *wl_queue;
+    int *wl_in_queue;
+    int *wl_saved_nbrs;
+    int wl_tag;
 
     // HiGHS batch column buffers
     int col_capacity;
@@ -96,6 +100,10 @@ densify_context *densify_context_create(int initial_n)
     ctx->col_map = malloc(sizeof(int) * ctx->capacity_n);
     ctx->N_prime = malloc(sizeof(int) * ctx->capacity_n);
     ctx->C_dom = malloc(sizeof(int) * ctx->capacity_n);
+    ctx->wl_queue = malloc(sizeof(int) * ctx->capacity_n);
+    ctx->wl_in_queue = calloc(ctx->capacity_n, sizeof(int));
+    ctx->wl_saved_nbrs = malloc(sizeof(int) * ctx->capacity_n);
+    ctx->wl_tag = 0;
 
     ctx->col_capacity = 256;
     ctx->col_cost = malloc(sizeof(double) * ctx->col_capacity);
@@ -137,11 +145,15 @@ static void densify_context_ensure_n(densify_context *ctx, int n)
     ctx->col_map = realloc(ctx->col_map, sizeof(int) * ctx->capacity_n);
     ctx->N_prime = realloc(ctx->N_prime, sizeof(int) * ctx->capacity_n);
     ctx->C_dom = realloc(ctx->C_dom, sizeof(int) * ctx->capacity_n);
+    ctx->wl_queue = realloc(ctx->wl_queue, sizeof(int) * ctx->capacity_n);
+    ctx->wl_in_queue = realloc(ctx->wl_in_queue, sizeof(int) * ctx->capacity_n);
+    ctx->wl_saved_nbrs = realloc(ctx->wl_saved_nbrs, sizeof(int) * ctx->capacity_n);
 
     memset(ctx->stamp + old_cap, 0, sizeof(int) * (ctx->capacity_n - old_cap));
     memset(ctx->conflicts + old_cap, 0, sizeof(int) * (ctx->capacity_n - old_cap));
     memset(ctx->in_set + old_cap, 0, sizeof(int) * (ctx->capacity_n - old_cap));
     memset(ctx->col_tag + old_cap, 0, sizeof(int) * (ctx->capacity_n - old_cap));
+    memset(ctx->wl_in_queue + old_cap, 0, sizeof(int) * (ctx->capacity_n - old_cap));
 }
 
 static void densify_context_ensure_cols(densify_context *ctx, int needed_cols)
@@ -202,6 +214,9 @@ void densify_context_destroy(densify_context *ctx)
     free(ctx->col_map);
     free(ctx->N_prime);
     free(ctx->C_dom);
+    free(ctx->wl_queue);
+    free(ctx->wl_in_queue);
+    free(ctx->wl_saved_nbrs);
 
     free(ctx->col_cost);
     free(ctx->col_lower);
@@ -245,7 +260,7 @@ int densify_is_dominated(graph *g, int u)
 
 // Fast greedy + 1-swap MWIS check on candidate subset S of C
 static inline int mwis_check(graph *g, int *S, int S_size, long long target,
-                            int *conflicts, int *in_set, int *order, int base_tag, int num_restarts)
+                             int *conflicts, int *in_set, int *order, int base_tag, int num_restarts)
 {
     for (int r = 0; r < num_restarts; r++)
     {
@@ -362,6 +377,45 @@ static inline int mwis_check(graph *g, int *S, int S_size, long long target,
     return 0;
 }
 
+static inline int mwis_check_pair_cases(densify_context *ctx, graph *g, int u, int v,
+                                        long long w_Cu, int Cu_size,
+                                        long long w_Cv, int Cv_size,
+                                        long long w_C, int C_size,
+                                        const densify_options *opt)
+{
+    int restarts = (opt && opt->num_restarts > 0) ? opt->num_restarts : 4;
+    int stride = restarts * 10 + 5;
+
+    // Case 1: replace u only (target: W[u])
+    if (w_Cu >= g->W[u])
+    {
+        int tag = ctx->cur_tag + 1;
+        ctx->cur_tag += stride;
+        if (mwis_check(g, ctx->Cu, Cu_size, g->W[u], ctx->conflicts, ctx->in_set, ctx->order, tag, restarts))
+            return 1;
+    }
+
+    // Case 2: replace v only (target: W[v])
+    if (w_Cv >= g->W[v])
+    {
+        int tag = ctx->cur_tag + 1;
+        ctx->cur_tag += stride;
+        if (mwis_check(g, ctx->Cv, Cv_size, g->W[v], ctx->conflicts, ctx->in_set, ctx->order, tag, restarts))
+            return 1;
+    }
+
+    // Case 3: replace both u and v (target: W[u] + W[v])
+    if (w_C >= g->W[u] + g->W[v])
+    {
+        int tag = ctx->cur_tag + 1;
+        ctx->cur_tag += stride;
+        if (mwis_check(g, ctx->C, C_size, g->W[u] + g->W[v], ctx->conflicts, ctx->in_set, ctx->order, tag, restarts))
+            return 1;
+    }
+
+    return 0;
+}
+
 int densify_test_pair_heuristic(densify_context *ctx, graph *g, int u, int v, const densify_options *opt)
 {
     assert(g != NULL);
@@ -452,31 +506,7 @@ int densify_test_pair_heuristic(densify_context *ctx, graph *g, int u, int v, co
     if (C_size == 0)
         return 0;
 
-    int restarts = (opt && opt->num_restarts > 0) ? opt->num_restarts : 4;
-    int tag_mwis = ctx->cur_tag += 50;
-
-    // Case 1: replace u only (target: W[u])
-    if (w_Cu >= g->W[u])
-    {
-        if (mwis_check(g, ctx->Cu, Cu_size, g->W[u], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis, restarts))
-            return 1;
-    }
-
-    // Case 2: replace v only (target: W[v])
-    if (w_Cv >= g->W[v])
-    {
-        if (mwis_check(g, ctx->Cv, Cv_size, g->W[v], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis + 15, restarts))
-            return 1;
-    }
-
-    // Case 3: replace both u and v (target: W[u] + W[v])
-    if (w_C >= g->W[u] + g->W[v])
-    {
-        if (mwis_check(g, ctx->C, C_size, g->W[u] + g->W[v], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis + 30, restarts))
-            return 1;
-    }
-
-    return 0;
+    return mwis_check_pair_cases(ctx, g, u, v, w_Cu, Cu_size, w_Cv, Cv_size, w_C, C_size, opt);
 }
 
 int densify_test_pair_ctx(densify_context *ctx, graph *g, int u, int v, const densify_options *opt)
@@ -1503,31 +1533,7 @@ int densify_test_pair_heuristic_extended(densify_context *ctx, graph *g, int u, 
     if (C_size == 0)
         return 0;
 
-    int restarts = (opt && opt->num_restarts > 0) ? opt->num_restarts : 4;
-    int tag_mwis = (ctx->cur_tag += 50);
-
-    // Case 1: replace u only (target: W[u])
-    if (w_Cu >= g->W[u])
-    {
-        if (mwis_check(g, ctx->Cu, Cu_size, g->W[u], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis, restarts))
-            return 1;
-    }
-
-    // Case 2: replace v only (target: W[v])
-    if (w_Cv >= g->W[v])
-    {
-        if (mwis_check(g, ctx->Cv, Cv_size, g->W[v], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis + 15, restarts))
-            return 1;
-    }
-
-    // Case 3: replace both u and v (target: W[u] + W[v])
-    if (w_C >= g->W[u] + g->W[v])
-    {
-        if (mwis_check(g, ctx->C, C_size, g->W[u] + g->W[v], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis + 30, restarts))
-            return 1;
-    }
-
-    return 0;
+    return mwis_check_pair_cases(ctx, g, u, v, w_Cu, Cu_size, w_Cv, Cv_size, w_C, C_size, opt);
 }
 
 int densify_test_pair_highs_extended(densify_context *ctx, graph *g, int u, const int *N_prime, int N_prime_count, int v, const densify_options *opt)
@@ -1826,8 +1832,9 @@ static inline int test_neighborhood_domination(densify_context *ctx, graph *g, i
     // Independent-set domination
     if (w_C_dom >= g->W[u] && C_dom_size > 0)
     {
-        int tag_mwis = (ctx->cur_tag += 50);
         int restarts = (opt && opt->num_restarts > 0) ? opt->num_restarts : 4;
+        int tag_mwis = ctx->cur_tag + 1;
+        ctx->cur_tag += restarts * 10 + 5;
         if (mwis_check(g, ctx->C_dom, C_dom_size, g->W[u], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis, restarts))
         {
             graph_deactivate_vertex(g, u);
@@ -1849,8 +1856,7 @@ int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const 
     // Check if u is already isolated (degree 0)
     if (g->D[u] == 0)
     {
-        g->off += g->W[u];
-        graph_deactivate_vertex(g, u);
+        graph_reduce(g, u, 1);
         if (out_dom_type)
             *out_dom_type = 3;
         return 1;
@@ -1869,8 +1875,7 @@ int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const 
             int v = g->V[u][0];
             graph_deactivate_vertex(g, v);
         }
-        g->off += g->W[u];
-        graph_deactivate_vertex(g, u);
+        graph_reduce(g, u, 1);
         if (out_dom_type)
             *out_dom_type = 3;
         return 1;
@@ -2094,3 +2099,186 @@ int densify_dominate_reduce_graph(densify_context *ctx, graph *g, const densify_
     return total_reduced;
 }
 
+typedef struct
+{
+    int *q;
+    int *in_q;
+    int cap;
+    int tag;
+    int head;
+    int tail;
+    int count;
+} wl_ring;
+
+static inline void wl_push(wl_ring *r, const graph *g, int v)
+{
+    if (g->A[v] && r->in_q[v] != r->tag)
+    {
+        r->in_q[v] = r->tag;
+        r->q[r->tail] = v;
+        r->tail = (r->tail + 1 == r->cap) ? 0 : r->tail + 1;
+        r->count++;
+    }
+}
+
+static inline int wl_pop(wl_ring *r)
+{
+    int v = r->q[r->head];
+    r->head = (r->head + 1 == r->cap) ? 0 : r->head + 1;
+    r->count--;
+    r->in_q[v] = 0;
+    return v;
+}
+
+static inline void wl_touch(densify_context *ctx, const graph *g, int t_stamp, int *num_touched, int v)
+{
+    if (g->A[v] && ctx->stamp[v] != t_stamp)
+    {
+        ctx->stamp[v] = t_stamp;
+        ctx->candidates[(*num_touched)++] = v;
+    }
+}
+
+static inline void wl_push_affected(wl_ring *r, densify_context *ctx, const graph *g,
+                                    int t_stamp, int *num_touched,
+                                    int v, const int *nbrs, int deg)
+{
+    if (g->A[v])
+    {
+        wl_push(r, g, v);
+        if (num_touched)
+            wl_touch(ctx, g, t_stamp, num_touched, v);
+    }
+    for (int i = 0; i < deg; i++)
+    {
+        int nbr = nbrs[i];
+        if (g->A[nbr])
+        {
+            wl_push(r, g, nbr);
+            if (num_touched)
+                wl_touch(ctx, g, t_stamp, num_touched, nbr);
+        }
+        else
+        {
+            for (int j = 0; j < g->D[nbr]; j++)
+            {
+                int nbr2 = g->V[nbr][j];
+                wl_push(r, g, nbr2);
+                if (num_touched)
+                    wl_touch(ctx, g, t_stamp, num_touched, nbr2);
+            }
+        }
+    }
+}
+
+int densify_dominate_reduce_local(densify_context *ctx, graph *g, int u, int folding, int ref_n, const densify_options *opt)
+{
+    if (!ctx || !g || g->n <= 0 || u < 0 || u >= g->n)
+        return 0;
+
+    densify_context_ensure_n(ctx, g->n);
+
+    wl_ring ring = {
+        .q = ctx->wl_queue,
+        .in_q = ctx->wl_in_queue,
+        .cap = ctx->capacity_n,
+        .tag = ++ctx->wl_tag,
+        .head = 0,
+        .tail = 0,
+        .count = 0
+    };
+
+    // During seeding and Tier 1, ctx->stamp and ctx->candidates are unused by graph_reduce,
+    // so we use them to record every unique vertex touched for the Tier 2 handoff.
+    int t_stamp = ++ctx->cur_tag;
+    int num_touched = 0;
+
+    // Seed with BFS of depth <= 2 from u
+    if (g->A[u])
+    {
+        wl_push(&ring, g, u);
+        wl_touch(ctx, g, t_stamp, &num_touched, u);
+    }
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        int v = g->V[u][i];
+        if (g->A[v])
+        {
+            wl_push(&ring, g, v);
+            wl_touch(ctx, g, t_stamp, &num_touched, v);
+        }
+        for (int j = 0; j < g->D[v]; j++)
+        {
+            int w = g->V[v][j];
+            if (g->A[w])
+            {
+                wl_push(&ring, g, w);
+                wl_touch(ctx, g, t_stamp, &num_touched, w);
+            }
+        }
+    }
+
+    // Tier 1: Cheap standard reductions (graph_reduce) to a local fixed point
+    while (ring.count > 0 && !is_tle())
+    {
+        if (g->nr < ref_n)
+            return 1;
+
+        int v = wl_pop(&ring);
+        if (!g->A[v])
+            continue;
+
+        if (graph_reduce(g, v, folding))
+        {
+            if (g->nr < ref_n)
+                return 1;
+            wl_push_affected(&ring, ctx, g, t_stamp, &num_touched, v, g->V[v], g->D[v]);
+        }
+    }
+
+    if (g->nr < ref_n)
+        return 1;
+    if (is_tle())
+        return 0;
+
+    // Tier 2: Re-seed worklist with all still-active touched vertices, then run
+    // densify_dominate_reduce_vertex (and graph_reduce on newly dirtied vertices).
+    // Note: densify_dominate_reduce_vertex overwrites ctx->candidates and ctx->stamp.
+    for (int i = 0; i < num_touched; i++)
+        wl_push(&ring, g, ctx->candidates[i]);
+
+    while (ring.count > 0 && !is_tle())
+    {
+        if (g->nr < ref_n)
+            return 1;
+
+        int v = wl_pop(&ring);
+        if (!g->A[v])
+            continue;
+
+        if (graph_reduce(g, v, folding))
+        {
+            if (g->nr < ref_n)
+                return 1;
+            wl_push_affected(&ring, ctx, g, 0, NULL, v, g->V[v], g->D[v]);
+            continue;
+        }
+
+        // Save v's neighbors before densify_dominate_reduce_vertex, since heavy-dom
+        // (dom_type == 3) empties g->D[v] to 0.
+        int saved_deg = g->D[v];
+        int *saved_nbrs = ctx->wl_saved_nbrs;
+        for (int i = 0; i < saved_deg; i++)
+            saved_nbrs[i] = g->V[v][i];
+
+        int dom_type = 0;
+        if (densify_dominate_reduce_vertex(ctx, g, v, opt, &dom_type))
+        {
+            if (g->nr < ref_n)
+                return 1;
+            wl_push_affected(&ring, ctx, g, 0, NULL, v, saved_nbrs, saved_deg);
+        }
+    }
+
+    return g->nr < ref_n;
+}

@@ -66,6 +66,11 @@ int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const 
 // Runs the fixed-point outer loop over active vertices (0..n-1) until convergence.
 int densify_dominate_reduce_graph(densify_context *ctx, graph *g, const densify_options *opt, int *out_single_dom, int *out_set_dom, int *out_heavy_dom);
 
+// Runs a two-tier local worklist reduction seeded around vertex u (depth <= 2):
+// Tier 1 runs cheap graph_reduce to local fixed point; Tier 2 runs densify_dominate_reduce_vertex
+// locally with cascading neighbor propagation, stopping early if g->nr < ref_n.
+int densify_dominate_reduce_local(densify_context *ctx, graph *g, int u, int folding, int ref_n, const densify_options *opt);
+
 #ifdef __cplusplus
 }
 #endif
