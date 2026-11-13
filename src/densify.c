@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <assert.h>
 #include <signal.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 extern volatile sig_atomic_t tle __attribute__((weak));
 
@@ -275,10 +278,16 @@ static inline int mwis_check(graph *g, int *S, int S_size, long long target,
 
         if (r > 0)
         {
-            // Fisher-Yates random shuffle
+            // Fisher-Yates random shuffle (thread-safe xorshift32)
+            unsigned int rng = (unsigned int)(cur_tag + 1) * 2654435761u ^ ((unsigned int)r * 0x9e3779b9u) ^ (unsigned int)S_size;
+            if (rng == 0)
+                rng = 1;
             for (int i = 0; i < S_size - 1; i++)
             {
-                int j = i + (rand() % (S_size - i));
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                int j = i + (int)(rng % (unsigned int)(S_size - i));
                 int tmp = order[i];
                 order[i] = order[j];
                 order[j] = tmp;
@@ -1779,7 +1788,7 @@ int densify_test_pair_extended(densify_context *ctx, graph *g, int u, const int 
     return densify_test_pair_highs_extended(ctx, g, u, N_prime, N_prime_count, v, opt);
 }
 
-static inline int test_neighborhood_domination(densify_context *ctx, graph *g, int u, const int *N_prime, int n_prime_count, const densify_options *opt)
+static inline int test_neighborhood_domination(densify_context *ctx, graph *g, int u, const int *N_prime, int n_prime_count, const densify_options *opt, int dry_run)
 {
     if (n_prime_count == 0)
         return 0;
@@ -1821,7 +1830,8 @@ static inline int test_neighborhood_domination(densify_context *ctx, graph *g, i
             // Single-vertex domination
             if (g->W[v] > g->W[u] || (g->W[v] == g->W[u] && v < u))
             {
-                graph_deactivate_vertex(g, u);
+                if (!dry_run)
+                    graph_deactivate_vertex(g, u);
                 return 1;
             }
             ctx->C_dom[C_dom_size++] = v;
@@ -1837,7 +1847,8 @@ static inline int test_neighborhood_domination(densify_context *ctx, graph *g, i
         ctx->cur_tag += restarts * 10 + 5;
         if (mwis_check(g, ctx->C_dom, C_dom_size, g->W[u], ctx->conflicts, ctx->in_set, ctx->order, tag_mwis, restarts))
         {
-            graph_deactivate_vertex(g, u);
+            if (!dry_run)
+                graph_deactivate_vertex(g, u);
             return 2;
         }
     }
@@ -1845,7 +1856,7 @@ static inline int test_neighborhood_domination(densify_context *ctx, graph *g, i
     return 0;
 }
 
-int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const densify_options *opt, int *out_dom_type)
+static int densify_dominate_reduce_vertex_internal(densify_context *ctx, graph *g, int u, const densify_options *opt, int *out_dom_type, int dry_run)
 {
     if (out_dom_type)
         *out_dom_type = 0;
@@ -1856,7 +1867,8 @@ int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const 
     // Check if u is already isolated (degree 0)
     if (g->D[u] == 0)
     {
-        graph_reduce(g, u, 1);
+        if (!dry_run)
+            graph_reduce(g, u, 1);
         if (out_dom_type)
             *out_dom_type = 3;
         return 1;
@@ -1870,12 +1882,15 @@ int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const 
 
     if (g->W[u] >= nbr_weight)
     {
-        while (g->D[u] > 0)
+        if (!dry_run)
         {
-            int v = g->V[u][0];
-            graph_deactivate_vertex(g, v);
+            while (g->D[u] > 0)
+            {
+                int v = g->V[u][0];
+                graph_deactivate_vertex(g, v);
+            }
+            graph_reduce(g, u, 1);
         }
-        graph_reduce(g, u, 1);
         if (out_dom_type)
             *out_dom_type = 3;
         return 1;
@@ -1893,7 +1908,7 @@ int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const 
     }
 
     // Step 0: Test domination immediately on initial N(u)
-    int initial_dom = test_neighborhood_domination(ctx, g, u, ctx->N_prime, n_prime_count, opt);
+    int initial_dom = test_neighborhood_domination(ctx, g, u, ctx->N_prime, n_prime_count, opt, dry_run);
     if (initial_dom > 0)
     {
         if (out_dom_type)
@@ -1974,7 +1989,7 @@ int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const 
         }
 
         // End-of-pass Domination Check
-        int dom_res = test_neighborhood_domination(ctx, g, u, ctx->N_prime, n_prime_count, opt);
+        int dom_res = test_neighborhood_domination(ctx, g, u, ctx->N_prime, n_prime_count, opt, dry_run);
         if (dom_res > 0)
         {
             if (out_dom_type)
@@ -1993,6 +2008,35 @@ int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const 
     return 0;
 }
 
+int densify_dominate_reduce_vertex(densify_context *ctx, graph *g, int u, const densify_options *opt, int *out_dom_type)
+{
+    return densify_dominate_reduce_vertex_internal(ctx, g, u, opt, out_dom_type, 0);
+}
+
+static inline void mark_dirty_2hop(const graph *g, int u, int *dirty, int tag)
+{
+    dirty[u] = tag;
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        int v = g->V[u][i];
+        dirty[v] = tag;
+        for (int j = 0; j < g->D[v]; j++)
+            dirty[g->V[v][j]] = tag;
+    }
+}
+
+static inline int has_dirty_1hop(const graph *g, int u, const int *dirty, int tag)
+{
+    if (dirty[u] == tag)
+        return 1;
+    for (int i = 0; i < g->D[u]; i++)
+    {
+        if (dirty[g->V[u][i]] == tag)
+            return 1;
+    }
+    return 0;
+}
+
 int densify_dominate_reduce_graph(densify_context *ctx, graph *g, const densify_options *opt, int *out_single_dom, int *out_set_dom, int *out_heavy_dom)
 {
     if (!g || g->nr <= 1)
@@ -2008,6 +2052,27 @@ int densify_dominate_reduce_graph(densify_context *ctx, graph *g, const densify_
     int total_heavy_dom = 0;
     int total_reduced = 0;
     int outer_pass = 0;
+    int small_passes = 0;
+
+    int nthreads = 1;
+#ifdef _OPENMP
+    nthreads = omp_get_max_threads();
+    if (nthreads < 1)
+        nthreads = 1;
+#endif
+
+    densify_context **t_ctx = NULL;
+    int *action = NULL;
+    int *dirty = NULL;
+    if (nthreads > 1 && g->nr >= 64)
+    {
+        t_ctx = malloc(sizeof(densify_context *) * nthreads);
+        t_ctx[0] = ctx;
+        for (int t = 1; t < nthreads; t++)
+            t_ctx[t] = densify_context_create(g->n);
+        action = calloc(g->n, sizeof(int));
+        dirty = calloc(g->n, sizeof(int));
+    }
 
     if (actual_opt->verbose)
     {
@@ -2030,14 +2095,87 @@ int densify_dominate_reduce_graph(densify_context *ctx, graph *g, const densify_
         int nr_before_pass = g->nr;
         double t_pass_start = get_wall_time();
 
-        for (int u = 0; u < g->n && g->nr > 0 && !is_tle(); u++)
+        if (!t_ctx || g->nr < 64)
         {
-            if (!g->A[u])
-                continue;
-
-            int dom_type = 0;
-            if (densify_dominate_reduce_vertex(ctx, g, u, actual_opt, &dom_type))
+            for (int u = 0; u < g->n && g->nr > 0 && !is_tle(); u++)
             {
+                if (!g->A[u])
+                    continue;
+
+                int dom_type = 0;
+                if (densify_dominate_reduce_vertex(ctx, g, u, actual_opt, &dom_type))
+                {
+                    if (dom_type == 1)
+                        pass_single++;
+                    else if (dom_type == 2)
+                        pass_set++;
+                    else if (dom_type == 3)
+                        pass_heavy++;
+                }
+            }
+        }
+        else
+        {
+            int n_cur = g->n;
+#ifdef _OPENMP
+            #pragma omp parallel for schedule(dynamic, 32) num_threads(nthreads)
+#endif
+            for (int u = 0; u < n_cur; u++)
+            {
+                if (!g->A[u] || is_tle())
+                {
+                    action[u] = 0;
+                    continue;
+                }
+#ifdef _OPENMP
+                int tid = omp_get_thread_num();
+#else
+                int tid = 0;
+#endif
+                int dt = 0;
+                action[u] = densify_dominate_reduce_vertex_internal(t_ctx[tid], g, u, actual_opt, &dt, 1) ? dt : 0;
+            }
+
+            int max_dist = (actual_opt->max_distance > 0) ? actual_opt->max_distance : 3;
+            for (int u = 0; u < n_cur && g->nr > 0 && !is_tle(); u++)
+            {
+                int act = action[u];
+                if (act == 0 || !g->A[u])
+                    continue;
+
+                int dom_type = 0;
+                if (max_dist <= 2 && !has_dirty_1hop(g, u, dirty, outer_pass))
+                {
+                    // Neighborhood within 3 hops is untouched since parallel check: apply directly
+                    if (act == 3)
+                    {
+                        for (int i = 0; i < g->D[u]; i++)
+                            mark_dirty_2hop(g, g->V[u][i], dirty, outer_pass);
+                        dirty[u] = outer_pass;
+                        while (g->D[u] > 0)
+                            graph_deactivate_vertex(g, g->V[u][0]);
+                        graph_reduce(g, u, 1);
+                    }
+                    else
+                    {
+                        mark_dirty_2hop(g, u, dirty, outer_pass);
+                        graph_deactivate_vertex(g, u);
+                    }
+                    dom_type = act;
+                }
+                else
+                {
+                    // Re-verify sequentially if neighborhood was modified
+                    if (densify_dominate_reduce_vertex(ctx, g, u, actual_opt, &dom_type))
+                    {
+                        mark_dirty_2hop(g, u, dirty, outer_pass);
+                    }
+                    else
+                    {
+                        dom_type = 0;
+                    }
+                }
+
                 if (dom_type == 1)
                     pass_single++;
                 else if (dom_type == 2)
@@ -2071,6 +2209,25 @@ int densify_dominate_reduce_graph(densify_context *ctx, graph *g, const densify_
             }
             break;
         }
+
+        if (pass_reduced < 10)
+        {
+            if (++small_passes >= 8)
+                break;
+        }
+        else
+        {
+            small_passes = 0;
+        }
+    }
+
+    if (t_ctx)
+    {
+        for (int t = 1; t < nthreads; t++)
+            densify_context_destroy(t_ctx[t]);
+        free(t_ctx);
+        free(action);
+        free(dirty);
     }
 
     double t_end = get_wall_time();
