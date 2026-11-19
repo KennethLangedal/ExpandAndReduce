@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![C](https://img.shields.io/badge/C-GNU17-blue.svg)](https://gcc.gnu.org/)
 [![Heidelberg University](https://img.shields.io/badge/Heidelberg-University-c1002a)](https://www.uni-heidelberg.de)
+[![DOI](https://zenodo.org/badge/1096297979.svg)](https://doi.org/10.5281/zenodo.22960897)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22661369.svg)](https://doi.org/10.5281/zenodo.22661369)
 
 By [Martin Vatshelle](https://orcid.org/0009-0009-1788-2509), [Kenneth Langedal](https://orcid.org/0009-0001-6838-4640), and [Ernestine Großmann](https://orcid.org/0000-0002-9678-0253)
