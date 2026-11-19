@@ -94,13 +94,13 @@ static inline int neighborhood_missing_links(graph *g, int u, int max, int *X, i
             if (v > T[j])
                 continue;
 
+            if (n == max)
+                return -1;
+
             X[n] = v;
             Y[n] = T[j];
             n++;
         }
-
-        if (n > max)
-            return -1;
     }
 
     return n;
@@ -170,9 +170,11 @@ static inline void reduce_loop(graph *g, int n, int *X, int *Y, int *T, int sort
     int count = 0, imp = 1;
     while (imp && count++ < n && !tle)
     {
-        if (g->nr > _ba)
+        // B holds every active vertex, which can be more than g->nr; g->n bounds them
+        if (g->n > _ba)
         {
-            _ba *= 2;
+            while (_ba < g->n)
+                _ba *= 2;
             B = realloc(B, sizeof(int) * _ba);
         }
 
@@ -226,9 +228,11 @@ int main(int argc, char **argv)
 
     printf("%s,%d,%d,", argv[1], g->n, g->m);
 
+    // X and Y hold at most max missing links, max <= STARTING_CEILING + (MAX_ITERATIONS - 1) * FORCE_FACTOR
+    int _xa = STARTING_CEILING + MAX_ITERATIONS * FORCE_FACTOR;
     int *T = malloc(sizeof(int) * g->m);
-    int *X = malloc(sizeof(int) * g->m);
-    int *Y = malloc(sizeof(int) * g->m);
+    int *X = malloc(sizeof(int) * _xa);
+    int *Y = malloc(sizeof(int) * _xa);
 
     int *I = malloc(sizeof(int) * g->org_n);
     for (int i = 0; i < g->org_n; i++)
